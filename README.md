@@ -14,8 +14,8 @@
 
 ## ダウンロード
 
-[Releases](https://github.com/RiTa-23/obs-video-playlist/releases/latest) から `obs-video-playlist-vX.Y.Z.zip` をダウンロードして展開してください。
-（このリポジトリを Code → Download ZIP で落としても同じものが使えます）
+[ZIP をダウンロード](https://github.com/RiTa-23/obs-video-playlist/archive/refs/heads/main.zip)して展開してください（このページ上部の **Code → Download ZIP** と同じものです）。
+使うのは `obs-video-playlist.lua` と `video-playlist-dock.html` の2つです。
 
 ## 中身
 
