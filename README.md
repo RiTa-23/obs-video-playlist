@@ -14,8 +14,8 @@
 
 ## ダウンロード
 
-[ZIP をダウンロード](https://github.com/RiTa-23/obs-video-playlist/archive/refs/heads/main.zip)して展開してください（このページ上部の **Code → Download ZIP** と同じものです）。
-使うのは `obs-video-playlist.lua` と `video-playlist-dock.html` の2つです。
+[最新の Release](https://github.com/RiTa-23/obs-video-playlist/releases/latest) から **`obs-video-playlist-vX.Y.Z.zip`** をダウンロードして展開してください。
+（同じページにある「Source code」ではなく、`obs-video-playlist-` で始まる zip です）
 
 ## 中身
 
@@ -126,6 +126,19 @@
 
 - v1.0.1：フィルタを付けたソースの大きさが 0×0 になり、画面に映らないことがある問題を修正
 - v1.0.0：最初のリリース
+
+## 新しいバージョンの公開手順（メンテナー向け）
+
+1. `obs-video-playlist.lua` 冒頭の `VERSION` を上げ、README の更新履歴に追記してコミット
+2. 変更内容を書いた注釈付きタグを作って push する
+
+   ```sh
+   git tag -a v1.0.2 -m "変更内容"
+   git push origin v1.0.2
+   ```
+
+GitHub Actions が配布用 zip を作り、タグのメッセージをリリースノートにして Release を公開します。
+`VERSION` とタグが食い違っていると公開は止まります。
 
 ## ライセンス
 

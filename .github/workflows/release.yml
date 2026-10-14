@@ -1,0 +1,44 @@
+name: Release
+
+# v1.2.3 のようなタグを push すると、配布用 zip を作って GitHub Release に載せる
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: スクリプトのバージョンとタグが一致しているか確認
+        run: |
+          script_version=$(sed -n 's/^local VERSION *= *"\(.*\)"/\1/p' obs-video-playlist.lua)
+          if [ "v${script_version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::obs-video-playlist.lua の VERSION (${script_version}) とタグ (${GITHUB_REF_NAME}) が一致しません"
+            exit 1
+          fi
+
+      - name: 配布用 zip を作成
+        run: |
+          name="obs-video-playlist"
+          mkdir -p "dist/${name}/docs"
+          cp obs-video-playlist.lua video-playlist-dock.html README.md LICENSE "dist/${name}/"
+          cp docs/screenshot.png "dist/${name}/docs/"
+          cd dist
+          zip -r -X "${name}-${GITHUB_REF_NAME}.zip" "${name}"
+
+      - name: Release を作成
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" "dist/obs-video-playlist-${GITHUB_REF_NAME}.zip" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-from-tag \
+            --verify-tag
