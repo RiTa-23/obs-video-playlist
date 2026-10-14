@@ -1,21 +1,18 @@
 name: Release
 
-# v1.2.3 のようなタグを push すると、配布用 zip を作って GitHub Release に載せる
+# GitHub で Release を公開すると、配布用 zip を作ってその Release に添付する
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  attach-zip:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: スクリプトのバージョンとタグが一致しているか確認
         run: |
@@ -34,11 +31,8 @@ jobs:
           cd dist
           zip -r -X "${name}-${GITHUB_REF_NAME}.zip" "${name}"
 
-      - name: Release を作成
+      - name: Release に zip を添付
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" "dist/obs-video-playlist-${GITHUB_REF_NAME}.zip" \
-            --title "${GITHUB_REF_NAME}" \
-            --notes-from-tag \
-            --verify-tag
+          gh release upload "${GITHUB_REF_NAME}" "dist/obs-video-playlist-${GITHUB_REF_NAME}.zip" --clobber

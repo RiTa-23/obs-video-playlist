@@ -129,16 +129,11 @@
 
 ## 新しいバージョンの公開手順（メンテナー向け）
 
-1. `obs-video-playlist.lua` 冒頭の `VERSION` を上げ、README の更新履歴に追記してコミット
-2. 変更内容を書いた注釈付きタグを作って push する
+1. `obs-video-playlist.lua` 冒頭の `VERSION` を上げ、README の更新履歴に追記して main に push
+2. GitHub の **Releases → Draft a new release** で、タグに `v` + 同じバージョン（例：`v1.0.2`）を新規作成し、変更点を書いて **Publish release**
 
-   ```sh
-   git tag -a v1.0.2 -m "変更内容"
-   git push origin v1.0.2
-   ```
-
-GitHub Actions が配布用 zip を作り、タグのメッセージをリリースノートにして Release を公開します。
-`VERSION` とタグが食い違っていると公開は止まります。
+公開すると GitHub Actions が配布用 zip（`obs-video-playlist-v1.0.2.zip`）を作って、その Release に自動で添付します（1分ほどかかります）。
+`VERSION` とタグが食い違っていると zip は添付されません（Actions タブにエラーが出ます）。
 
 ## ライセンス
 
