@@ -1,0 +1,1656 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>動画プレイリスト</title>
+<!--
+  動画プレイリスト ドック (video-playlist-dock.html) v1.0.1
+  OBS の「ドック → カスタムブラウザドック」に、このファイルの file:/// URL を登録して使います。
+  obs-websocket（OBS 28 以降に内蔵）で OBS と通信します。
+  URL パラメータ: ?port=4455&password=xxxx&host=127.0.0.1  /  ?demo （OBS なしで動作確認）
+-->
+<style>
+:root {
+  --bg: #1d1f26;
+  --panel: #262932;
+  --raised: #2f333e;
+  --hover: #363a47;
+  --border: #3a3f4c;
+  --border-soft: #2f333d;
+  --text: #e9ebf1;
+  --muted: #9ba1af;
+  --faint: #6c7282;
+  --accent: #5b7cf0;
+  --accent-strong: #3f5fd6;
+  --accent-tint: rgba(91, 124, 240, 0.16);
+  --accent-tint-2: rgba(91, 124, 240, 0.30);
+  --danger: #ec6b6b;
+  --danger-tint: rgba(236, 107, 107, 0.14);
+  --warn: #e9b44c;
+  --warn-tint: rgba(233, 180, 76, 0.14);
+  --ok: #43c486;
+  --radius: 8px;
+  --row-h: 48px;
+  --font: "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo UI", "Noto Sans JP", system-ui, sans-serif;
+  --mono: "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 var(--font);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+svg { display: block; }
+[hidden] { display: none !important; }
+
+#app { display: flex; flex-direction: column; height: 100%; }
+
+/* ---------- ヘッダ ---------- */
+.top {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 8px 8px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  min-height: 44px;
+}
+.pl-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.pl-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pl-select {
+  flex: 1; min-width: 0; max-width: 100%;
+  background: var(--raised); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 8px; height: 28px; outline: none;
+}
+.pl-select:focus-visible { border-color: var(--accent); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(67, 196, 134, .15); }
+.dot.wait { background: var(--warn); animation: blink 1.2s ease-in-out infinite; }
+.dot.err { background: var(--danger); }
+.dot.demo { background: #b48cf2; }
+@keyframes blink { 50% { opacity: .35; } }
+
+.icon-btn {
+  width: 30px; height: 30px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; border-radius: 6px; color: var(--muted);
+}
+.icon-btn:hover { background: var(--hover); color: var(--text); }
+.icon-btn:focus-visible, .btn:focus-visible, .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.icon-btn svg { width: 18px; height: 18px; }
+.icon-btn.on { color: var(--accent); background: var(--accent-tint); }
+
+/* ---------- バナー ---------- */
+.banner {
+  margin: 8px 8px 0; padding: 8px 10px; border-radius: var(--radius);
+  font-size: 12px; display: flex; gap: 8px; align-items: flex-start;
+  background: var(--warn-tint); color: #f2d08d; border: 1px solid rgba(233, 180, 76, .3);
+}
+.banner.error { background: var(--danger-tint); color: #f5a5a5; border-color: rgba(236, 107, 107, .35); }
+.banner.demo { background: rgba(180, 140, 242, .12); color: #d3bdf7; border-color: rgba(180, 140, 242, .3); }
+.banner svg { width: 16px; height: 16px; flex: none; margin-top: 1px; }
+.banner a, .banner button.link { color: inherit; text-decoration: underline; background: none; border: 0; padding: 0; }
+
+main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* ---------- 再生中カード ---------- */
+.now { padding: 12px 12px 10px; border-bottom: 1px solid var(--border-soft); }
+.now-label { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); letter-spacing: .02em; }
+.now-label .state { font-weight: 700; color: var(--accent); }
+.now-label .state.paused { color: var(--warn); }
+.now-label .state.idle { color: var(--muted); }
+.now-label .pos { margin-left: auto; font-variant-numeric: tabular-nums; }
+.now-title {
+  margin-top: 4px; font-size: 15px; font-weight: 650; line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  word-break: break-all; user-select: text;
+}
+.now-title .ext { color: var(--faint); font-weight: 500; }
+.now-sub { margin-top: 2px; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 4px; }
+.now-sub svg { width: 12px; height: 12px; flex: none; opacity: .8; }
+
+.seek { margin-top: 10px; position: relative; height: 16px; cursor: pointer; touch-action: none; }
+.seek .track { position: absolute; left: 0; right: 0; top: 6px; height: 4px; border-radius: 2px; background: var(--raised); overflow: hidden; transition: height .12s, top .12s; }
+.seek .fill { height: 100%; width: 0; background: var(--accent); border-radius: 2px; }
+.seek .knob { position: absolute; top: 3px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; background: #fff; opacity: 0; transition: opacity .12s; pointer-events: none; }
+.seek:hover .track { top: 5px; height: 6px; }
+.seek:hover .knob { opacity: 1; }
+.seek.disabled { cursor: default; }
+.seek.disabled .knob { display: none; }
+.times { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 1px; }
+
+.controls { display: flex; align-items: center; gap: 4px; margin-top: 8px; }
+.ctrl {
+  width: 34px; height: 34px; border-radius: 50%; border: 0; background: transparent; color: var(--text);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.ctrl:hover { background: var(--hover); }
+.ctrl svg { width: 18px; height: 18px; }
+.ctrl.main { width: 40px; height: 40px; background: var(--accent); color: #fff; }
+.ctrl.main:hover { background: var(--accent-strong); }
+.ctrl.main svg { width: 20px; height: 20px; }
+.ctrl:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.controls .spacer { flex: 1; }
+
+.seg { display: inline-flex; background: var(--raised); border-radius: 7px; padding: 2px; gap: 2px; }
+.seg button {
+  border: 0; background: transparent; color: var(--muted); border-radius: 5px;
+  height: 26px; padding: 0 8px; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; white-space: nowrap;
+}
+.seg button svg { width: 15px; height: 15px; }
+.seg button:hover { color: var(--text); }
+.seg button.on { background: var(--accent); color: #fff; }
+
+.next-line { margin-top: 8px; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.next-line b { color: var(--text); font-weight: 600; }
+
+/* ---------- ツールバー ---------- */
+.toolbar { display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); }
+.btn {
+  height: 28px; padding: 0 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--raised);
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; color: var(--text);
+}
+.btn:hover { background: var(--hover); }
+.btn svg { width: 15px; height: 15px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-strong); }
+.btn.danger-confirm { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.btn.ghost:hover { background: var(--hover); color: var(--text); }
+.toolbar .grow { flex: 1; }
+
+/* ---------- 追加パネル ---------- */
+.add-panel { padding: 10px 12px 12px; border-bottom: 1px solid var(--border-soft); background: var(--panel); }
+.add-panel textarea {
+  width: 100%; min-height: 64px; max-height: 160px; resize: vertical;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+  font: 12px/1.5 var(--mono); outline: none; user-select: text;
+}
+.add-panel textarea:focus { border-color: var(--accent); }
+.add-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.add-row label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.add-row select { background: var(--raised); border: 1px solid var(--border); border-radius: 5px; height: 26px; padding: 0 6px; }
+.add-actions { display: flex; gap: 6px; margin-top: 10px; align-items: center; }
+.add-actions .grow { flex: 1; }
+.hint { font-size: 11px; color: var(--faint); margin-top: 8px; line-height: 1.5; }
+.hint kbd { font: 10px var(--mono); background: var(--raised); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--muted); }
+
+/* ---------- リスト ---------- */
+.list-wrap { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; position: relative; padding: 4px 0 8px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.list-wrap::-webkit-scrollbar { width: 8px; }
+.list-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; border: 2px solid var(--bg); }
+.list { list-style: none; margin: 0; padding: 0 6px; }
+.section-label { font-size: 10.5px; font-weight: 700; color: var(--faint); letter-spacing: .06em; padding: 8px 8px 4px; display: flex; align-items: center; gap: 6px; }
+.section-label .cnt { font-weight: 500; }
+
+.row {
+  position: relative; display: flex; align-items: center; gap: 8px;
+  height: var(--row-h); padding: 0 6px 0 4px; margin: 1px 0;
+  border-radius: 6px; cursor: grab; outline: none;
+  transition: background .1s;
+}
+.row:hover { background: var(--panel); }
+.row:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.row.selected { background: var(--panel); }
+.grip { width: 14px; flex: none; color: var(--faint); opacity: 0; transition: opacity .1s; }
+.grip svg { width: 14px; height: 14px; }
+.row:hover .grip, .row:focus-visible .grip { opacity: 1; }
+.num { width: 26px; flex: none; text-align: right; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.meta { flex: 1; min-width: 0; }
+.name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+.name .ext { color: var(--faint); font-size: 11.5px; }
+.dir { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: var(--faint); margin-top: 1px; }
+.badge { flex: none; font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--accent-tint-2); color: var(--accent); }
+.row-actions { display: none; gap: 2px; flex: none; }
+.row:hover .row-actions, .row:focus-within .row-actions { display: inline-flex; }
+.row:hover .badge, .row:focus-within .badge { display: none; }
+.mini { width: 26px; height: 26px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; }
+.mini:hover { background: var(--hover); color: var(--text); }
+.mini.rm:hover { color: var(--danger); background: var(--danger-tint); }
+.mini svg { width: 15px; height: 15px; }
+
+.row.played .meta, .row.played .num { opacity: .45; }
+.row.current { background: var(--accent-tint); }
+.row.current::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 2px; background: var(--accent); }
+.row.current .name { font-weight: 650; color: #fff; }
+.row.current .mini-progress { position: absolute; left: 10px; right: 10px; bottom: 2px; height: 2px; background: rgba(255, 255, 255, .08); border-radius: 1px; overflow: hidden; }
+.row.current .mini-progress i { display: block; height: 100%; width: 0; background: var(--accent); }
+
+.eq { display: inline-flex; align-items: flex-end; justify-content: flex-end; gap: 2px; height: 12px; width: 26px; flex: none; padding-right: 2px; }
+.eq i { width: 3px; background: var(--accent); border-radius: 1px; height: 4px; }
+.eq.on i { animation: eq .9s ease-in-out infinite; }
+.eq.on i:nth-child(2) { animation-delay: -.45s; }
+.eq.on i:nth-child(3) { animation-delay: -.2s; }
+@keyframes eq { 0%, 100% { height: 3px; } 50% { height: 12px; } }
+
+/* ドラッグ */
+.row.placeholder { background: var(--accent-tint) !important; border: 1px dashed var(--accent); }
+.row.placeholder > * { visibility: hidden; }
+.row.placeholder::before { display: none; }
+.drag-ghost {
+  position: fixed; z-index: 50; pointer-events: none; margin: 0;
+  background: var(--raised) !important; box-shadow: 0 10px 28px rgba(0, 0, 0, .45), 0 0 0 1px var(--accent);
+  cursor: grabbing; opacity: .97;
+}
+.drag-ghost .grip { opacity: 1; }
+body.dragging, body.dragging * { cursor: grabbing !important; }
+
+.empty { padding: 28px 18px; text-align: center; color: var(--muted); }
+.empty .big { width: 40px; height: 40px; margin: 0 auto 10px; color: var(--faint); }
+.empty .big svg { width: 40px; height: 40px; }
+.empty p { margin: 6px 0; }
+
+.foot { border-top: 1px solid var(--border-soft); padding: 6px 12px; font-size: 11px; color: var(--faint); display: flex; gap: 10px; white-space: nowrap; overflow: hidden; }
+.foot .grow { flex: 1; }
+
+/* ---------- 画面（接続・未検出） ---------- */
+.screen { flex: 1; overflow-y: auto; padding: 18px 16px; }
+.screen h2 { font-size: 15px; margin: 0 0 4px; }
+.screen p { color: var(--muted); margin: 6px 0; font-size: 12px; }
+.field { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
+.field label { font-size: 11px; color: var(--muted); font-weight: 600; }
+.field input {
+  height: 32px; border-radius: 6px; border: 1px solid var(--border); background: var(--raised); padding: 0 10px; outline: none; user-select: text;
+  width: 100%; min-width: 0;
+}
+.field input:focus { border-color: var(--accent); }
+.field-row { display: flex; gap: 8px; }
+.field-row .field { flex: 1; min-width: 0; }
+.field-row .field.port { flex: 0 0 90px; }
+.screen .actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+.err-text { color: var(--danger); font-size: 12px; margin-top: 10px; }
+.steps { margin: 12px 0 0; padding-left: 20px; color: var(--muted); font-size: 12px; }
+.steps li { margin: 6px 0; }
+.steps b { color: var(--text); font-weight: 600; }
+.card { background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius); padding: 12px 14px; margin-top: 14px; }
+
+/* ---------- トースト・ドロップ ---------- */
+.toast {
+  position: fixed; left: 12px; right: 12px; bottom: 34px; z-index: 60;
+  background: #3a3f4d; color: var(--text); border-radius: 8px; padding: 8px 12px; font-size: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .4); opacity: 0; transform: translateY(6px); transition: opacity .18s, transform .18s; pointer-events: none;
+}
+.toast.show { opacity: 1; transform: none; }
+.drop-overlay {
+  position: fixed; inset: 6px; z-index: 70; border: 2px dashed var(--accent); border-radius: 12px;
+  background: rgba(29, 31, 38, .88); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text); pointer-events: none;
+}
+.drop-overlay svg { width: 36px; height: 36px; color: var(--accent); }
+
+@media (max-width: 300px) {
+  .seg button span { display: none; }
+  .btn .lbl-opt { display: none; }
+  .num { width: 18px; }
+}
+@media (max-height: 360px) {
+  .now-sub, .next-line { display: none; }
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="pl-title">
+      <select class="pl-select" id="plSelect" title="操作するプレイリスト" hidden></select>
+      <span class="pl-name" id="plName">動画プレイリスト</span>
+    </div>
+    <span class="dot" id="connDot" title="未接続"></span>
+    <button class="icon-btn" id="btnSettings" title="接続設定" data-icon="sliders"></button>
+  </header>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <main id="main" hidden>
+    <section class="now" id="now">
+      <div class="now-label"><span class="state" id="npState">停止中</span><span class="pos" id="npPos"></span></div>
+      <div class="now-title" id="npTitle">—</div>
+      <div class="now-sub" id="npSub"></div>
+      <div class="seek disabled" id="seek" title="クリックでシーク">
+        <div class="track"><div class="fill" id="seekFill"></div></div>
+        <div class="knob" id="seekKnob"></div>
+      </div>
+      <div class="times"><span id="tCur">0:00</span><span id="tDur">0:00</span></div>
+      <div class="controls">
+        <button class="ctrl" id="btnPrev" title="前の動画" data-icon="prev"></button>
+        <button class="ctrl main" id="btnPlay" title="再生／一時停止 (Space)" data-icon="play"></button>
+        <button class="ctrl" id="btnNext" title="次の動画" data-icon="next"></button>
+        <span class="spacer"></span>
+        <div class="seg" role="group" aria-label="再生順">
+          <button id="modeSeq" title="順番に再生"><i data-icon="ordered"></i><span>順番</span></button>
+          <button id="modeRand" title="ランダム（シャッフル）"><i data-icon="shuffle"></i><span>ランダム</span></button>
+        </div>
+        <button class="icon-btn" id="btnLoop" title="最後まで再生したら最初から繰り返す" data-icon="repeat"></button>
+      </div>
+      <div class="next-line" id="nextLine"></div>
+    </section>
+
+    <div class="toolbar">
+      <button class="btn primary" id="btnAdd"><i data-icon="plus"></i>追加</button>
+      <button class="btn ghost" id="btnSort" title="ファイル名順に並べ替え"><i data-icon="sort"></i><span class="lbl-opt">名前順</span></button>
+      <button class="btn ghost" id="btnReshuffle" title="未再生の順番をシャッフルし直す" hidden><i data-icon="shuffle"></i><span class="lbl-opt">シャッフル</span></button>
+      <span class="grow"></span>
+      <button class="icon-btn" id="btnPlayed" title="再生済みを表示／非表示" data-icon="history"></button>
+      <button class="icon-btn" id="btnClear" title="すべて削除" data-icon="trash"></button>
+    </div>
+
+    <div class="add-panel" id="addPanel" hidden>
+      <textarea id="addPaths" spellcheck="false" placeholder="動画ファイルやフォルダのパスを貼り付け（複数行OK）&#10;例) C:\Videos\BGV&#10;例) /Users/you/Movies/clip.mp4"></textarea>
+      <div class="add-row">
+        <label><input type="checkbox" id="addRecursive">サブフォルダも</label>
+        <select id="addPosition" title="追加する位置">
+          <option value="end">末尾に追加</option>
+          <option value="next">次に再生</option>
+        </select>
+      </div>
+      <div class="add-actions">
+        <button class="btn primary" id="addSubmit">追加する</button>
+        <button class="btn" id="addDialog" title="OBS のフィルタ画面を開きます"><i data-icon="folder"></i>ファイル選択で追加…</button>
+        <span class="grow"></span>
+        <button class="btn ghost" id="addCancel">閉じる</button>
+      </div>
+      <div class="hint">
+        パスのコピー：Windows は <kbd>Shift</kbd>+右クリック →「パスとしてコピー」、Mac は Finder で <kbd>⌥</kbd><kbd>⌘</kbd><kbd>C</kbd>。<br>
+        「ファイル選択で追加…」は OBS のフィルタ画面が開くので、「動画プレイリスト」→「ファイル／フォルダを追加」の ＋ から選べます。同じ動画は二重に追加されません。
+      </div>
+    </div>
+
+    <div class="list-wrap" id="listWrap">
+      <ol class="list" id="list"></ol>
+      <div class="empty" id="emptyList" hidden>
+        <div class="big" data-icon="film"></div>
+        <p><b>まだ動画がありません</b></p>
+        <p>「追加」からファイルやフォルダのパスを入れてください。</p>
+      </div>
+    </div>
+    <footer class="foot" id="foot"></footer>
+  </main>
+
+  <section class="screen" id="screenLoading" hidden>
+    <p>OBS に接続しています…</p>
+  </section>
+
+  <section class="screen" id="screenConnect" hidden>
+    <h2>OBS に接続</h2>
+    <p>このドックは OBS 内蔵の WebSocket サーバーで OBS とやり取りします。</p>
+    <ol class="steps">
+      <li>OBS のメニュー <b>ツール → WebSocket サーバー設定</b> を開く</li>
+      <li><b>WebSocketサーバーを有効にする</b> にチェック</li>
+      <li><b>接続情報を表示</b> でポートとパスワードを確認して下に入力</li>
+    </ol>
+    <div class="field-row">
+      <div class="field"><label for="cfgHost">ホスト</label><input id="cfgHost" autocomplete="off" spellcheck="false"></div>
+      <div class="field port"><label for="cfgPort">ポート</label><input id="cfgPort" inputmode="numeric" autocomplete="off"></div>
+    </div>
+    <div class="field"><label for="cfgPass">パスワード（認証を無効にしている場合は空欄）</label><input id="cfgPass" type="password" autocomplete="off"></div>
+    <div class="err-text" id="connErr" hidden></div>
+    <div class="actions">
+      <button class="btn primary" id="btnConnect">接続</button>
+      <button class="btn" id="btnDemo">デモで試す</button>
+      <button class="btn ghost" id="btnBack" hidden>戻る</button>
+    </div>
+    <p class="hint">設定はこのドック内に保存されます。URL に <code>?password=…</code> を付けて登録することもできます。</p>
+  </section>
+
+  <section class="screen" id="screenNone" hidden>
+    <h2>動画プレイリストが見つかりません</h2>
+    <p>OBS には接続できました。次の手順でプレイリストを作成してください。</p>
+    <ol class="steps">
+      <li><b>ツール → スクリプト</b> の ＋ で <b>obs-video-playlist.lua</b> を追加</li>
+      <li>スクリプトの画面で <b>「現在のシーンに『動画プレイリスト』を作成」</b> を押す<br>（または既存のメディアソースのフィルタに「動画プレイリスト」を追加）</li>
+    </ol>
+    <div class="actions"><button class="btn primary" id="btnRescan">再検索</button></div>
+  </section>
+
+  <div class="toast" id="toast"></div>
+  <div class="drop-overlay" id="dropOverlay" hidden><i data-icon="plus"></i><div>ドロップして追加</div></div>
+</div>
+
+<script>
+'use strict';
+
+/* =====================================================================
+ * アイコン
+ * ===================================================================== */
+const ICONS = {
+  play: '<path d="M7.5 4.8v14.4a.8.8 0 0 0 1.2.7l11.3-7.2a.8.8 0 0 0 0-1.4L8.7 4.1a.8.8 0 0 0-1.2.7z" fill="currentColor" stroke="none"/>',
+  pause: '<rect x="6" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/>',
+  prev: '<path d="M6 5v14"/><path d="M18.5 5.6v12.8a.7.7 0 0 1-1.1.6L9 12.6a.7.7 0 0 1 0-1.2l8.4-6.4a.7.7 0 0 1 1.1.6z" fill="currentColor" stroke="none"/>',
+  next: '<path d="M18 5v14"/><path d="M5.5 5.6v12.8a.7.7 0 0 0 1.1.6L15 12.6a.7.7 0 0 0 0-1.2L6.6 5a.7.7 0 0 0-1.1.6z" fill="currentColor" stroke="none"/>',
+  shuffle: '<path d="M3 7h3c2.2 0 3.4 1.1 4.6 3l2.8 4.2c1.2 1.8 2.4 2.8 4.6 2.8h3"/><path d="M3 17h3c1.5 0 2.5-.5 3.4-1.4"/><path d="M14.6 8.4C15.5 7.5 16.5 7 18 7h3"/><path d="m18 4 3 3-3 3"/><path d="m18 14 3 3-3 3"/>',
+  repeat: '<path d="M4 11V9.5A3.5 3.5 0 0 1 7.5 6H20"/><path d="m17 3 3 3-3 3"/><path d="M20 13v1.5a3.5 3.5 0 0 1-3.5 3.5H4"/><path d="m7 21-3-3 3-3"/>',
+  ordered: '<path d="M10 6h11M10 12h11M10 18h11"/><path d="M4 5.5 5.5 4.5V9"/><path d="M4 14.5c0-.8.7-1.5 1.5-1.5S7 13.6 7 14.4c0 1.3-3 2.1-3 3.6h3"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  trash: '<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="m6 7 1 12.2A1.9 1.9 0 0 0 8.9 21h6.2a1.9 1.9 0 0 0 1.9-1.8L18 7"/><path d="M9 7V4.8c0-.5.4-.8.8-.8h4.4c.4 0 .8.3.8.8V7"/>',
+  x: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+  grip: '<g fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></g>',
+  sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+  folder: '<path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h3.6l2 2h7.4a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
+  sort: '<path d="M4 6h9M4 12h6M4 18h3"/><path d="M17.5 5v14"/><path d="m14.5 16 3 3 3-3"/>',
+  history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5V9H8"/><path d="M12 8v4.5l3 2"/>',
+  playnow: '<path d="M8 5.6v12.8a.7.7 0 0 0 1.1.6l9.4-6.4a.7.7 0 0 0 0-1.2L9.1 5a.7.7 0 0 0-1.1.6z" fill="currentColor" stroke="none"/>',
+  upnext: '<path d="M4 6h11M4 11h8M4 16h6"/><path d="M15 21v-8"/><path d="m12 16 3-3 3 3"/>',
+  alert: '<path d="M12 4.5 2.8 19.5h18.4z"/><path d="M12 10v4"/><path d="M12 17h.01"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/>',
+  film: '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 4.5v15M17 4.5v15M3 9h4M3 15h4M17 9h4M17 15h4"/>',
+};
+function icon(name) {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[name] || '') + '</svg>';
+}
+function hydrateIcons(root) {
+  root.querySelectorAll('[data-icon]').forEach((el) => {
+    if (el.tagName === 'I') {
+      el.outerHTML = icon(el.dataset.icon);
+    } else {
+      el.innerHTML = icon(el.dataset.icon);
+    }
+  });
+}
+
+/* =====================================================================
+ * 小物
+ * ===================================================================== */
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('vp:' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('vp:' + k, JSON.stringify(v)); } catch (e) { /* ignore */ } },
+};
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function fmtTime(ms) {
+  if (ms == null || !isFinite(ms) || ms < 0) return '0:00';
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(sec).padStart(2, '0');
+}
+function splitName(name) {
+  const i = name.lastIndexOf('.');
+  if (i <= 0) return [name, ''];
+  return [name.slice(0, i), name.slice(i)];
+}
+function nameHtml(name) {
+  const [b, e] = splitName(name);
+  return esc(b) + (e ? '<span class="ext">' + esc(e) + '</span>' : '');
+}
+function dirOf(path) {
+  if (/^[a-z][\w+.-]*:\/\//i.test(path)) { try { return new URL(path).host; } catch (e) { return path; } }
+  const p = path.replace(/\\/g, '/');
+  const parts = p.split('/').filter(Boolean);
+  parts.pop();
+  if (!parts.length) return '/';
+  return (parts.length > 1 ? '…/' : '') + parts.slice(-1)[0];
+}
+// 再生中カード用：フォルダの末尾3階層だけを表示
+function shortDir(path) {
+  if (/^[a-z][\w+.-]*:\/\//i.test(path)) return dirOf(path);
+  const parts = path.replace(/\\/g, '/').split('/');
+  parts.pop();
+  const segs = parts.filter(Boolean);
+  if (segs.length <= 3) return parts.join('/') || '/';
+  return '…/' + segs.slice(-3).join('/');
+}
+let toastTimer = null;
+function toast(msg, ms = 2600) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), ms);
+}
+
+/* SHA-256（crypto.subtle が使えない環境用の予備） */
+function sha256Fallback(bytes) {
+  const K = new Uint32Array([0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2]);
+  const H = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  const l = bytes.length, nb = ((l + 9 + 63) >> 6) << 6;
+  const m = new Uint8Array(nb); m.set(bytes); m[l] = 0x80;
+  const dv = new DataView(m.buffer);
+  dv.setUint32(nb - 4, l * 8); dv.setUint32(nb - 8, Math.floor(l / 0x20000000));
+  const W = new Uint32Array(64);
+  const r = (x, n) => (x >>> n) | (x << (32 - n));
+  for (let o = 0; o < nb; o += 64) {
+    for (let i = 0; i < 16; i++) W[i] = dv.getUint32(o + i * 4);
+    for (let i = 16; i < 64; i++) {
+      const s0 = r(W[i - 15], 7) ^ r(W[i - 15], 18) ^ (W[i - 15] >>> 3);
+      const s1 = r(W[i - 2], 17) ^ r(W[i - 2], 19) ^ (W[i - 2] >>> 10);
+      W[i] = (W[i - 16] + s0 + W[i - 7] + s1) | 0;
+    }
+    let [a, b, c, d, e, f, g, h] = H;
+    for (let i = 0; i < 64; i++) {
+      const t1 = (h + (r(e, 6) ^ r(e, 11) ^ r(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + W[i]) | 0;
+      const t2 = ((r(a, 2) ^ r(a, 13) ^ r(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    H[0] += a; H[1] += b; H[2] += c; H[3] += d; H[4] += e; H[5] += f; H[6] += g; H[7] += h;
+  }
+  const out = new Uint8Array(32);
+  const odv = new DataView(out.buffer);
+  for (let i = 0; i < 8; i++) odv.setUint32(i * 4, H[i]);
+  return out;
+}
+async function sha256b64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let digest;
+  if (window.crypto && crypto.subtle) {
+    try { digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)); } catch (e) { digest = null; }
+  }
+  if (!digest) digest = sha256Fallback(bytes);
+  let bin = '';
+  digest.forEach((b) => { bin += String.fromCharCode(b); });
+  return btoa(bin);
+}
+
+/* =====================================================================
+ * obs-websocket v5 クライアント
+ * ===================================================================== */
+const SUBS = (1 << 0) | (1 << 3) | (1 << 5) | (1 << 8); // General, Inputs, Filters, MediaInputs
+
+class ObsSocket extends EventTarget {
+  constructor() { super(); this.ws = null; this.pending = new Map(); this.seq = 0; this.identified = false; }
+  connect(url, password) {
+    this.close();
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const done = (fn, v) => { if (!settled) { settled = true; fn(v); } };
+      let ws;
+      try { ws = new WebSocket(url, 'obswebsocket.json'); } catch (e) { done(reject, Object.assign(new Error('bad_url'), { kind: 'bad_url' })); return; }
+      this.ws = ws;
+      const timer = setTimeout(() => { done(reject, Object.assign(new Error('timeout'), { kind: 'timeout' })); try { ws.close(); } catch (e) { /* */ } }, 6000);
+      ws.onmessage = async (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch (e) { return; }
+        const d = msg.d;
+        if (msg.op === 0) {
+          const ident = { rpcVersion: 1, eventSubscriptions: SUBS };
+          if (d.authentication) {
+            if (!password) {
+              clearTimeout(timer);
+              done(reject, Object.assign(new Error('auth_required'), { kind: 'auth_required' }));
+              ws.close();
+              return;
+            }
+            const secret = await sha256b64(password + d.authentication.salt);
+            ident.authentication = await sha256b64(secret + d.authentication.challenge);
+          }
+          ws.send(JSON.stringify({ op: 1, d: ident }));
+        } else if (msg.op === 2) {
+          clearTimeout(timer);
+          this.identified = true;
+          done(resolve, d);
+        } else if (msg.op === 5) {
+          this.dispatchEvent(new CustomEvent('obs', { detail: d }));
+        } else if (msg.op === 7 || msg.op === 9) {
+          const p = this.pending.get(d.requestId);
+          if (p) { this.pending.delete(d.requestId); p.settle(d); }
+        }
+      };
+      ws.onclose = (ev) => {
+        clearTimeout(timer);
+        for (const p of this.pending.values()) p.fail(new Error('closed'));
+        this.pending.clear();
+        const kind = ev.code === 4009 ? 'auth_failed' : 'closed';
+        done(reject, Object.assign(new Error(kind), { kind, code: ev.code }));
+        const wasIdentified = this.identified && this.ws === ws;
+        if (this.ws === ws) { this.ws = null; this.identified = false; }
+        if (wasIdentified) this.dispatchEvent(new CustomEvent('close', { detail: ev }));
+      };
+      ws.onerror = () => { /* onclose で処理 */ };
+    });
+  }
+  close() {
+    if (this.ws) { const w = this.ws; this.ws = null; try { w.close(); } catch (e) { /* */ } }
+  }
+  get ready() { return !!this.ws && this.ws.readyState === 1; }
+  _send(op, d, settle, fail) {
+    if (!this.ready) { fail(new Error('not connected')); return; }
+    const t = setTimeout(() => { if (this.pending.delete(d.requestId)) fail(new Error('timeout')); }, 8000);
+    this.pending.set(d.requestId, { settle: (r) => { clearTimeout(t); settle(r); }, fail: (e) => { clearTimeout(t); fail(e); } });
+    this.ws.send(JSON.stringify({ op, d }));
+  }
+  call(requestType, requestData) {
+    return new Promise((resolve, reject) => {
+      const requestId = 'q' + (++this.seq);
+      this._send(6, { requestType, requestId, requestData }, (r) => {
+        if (r.requestStatus && !r.requestStatus.result) {
+          reject(Object.assign(new Error(r.requestStatus.comment || ('code ' + r.requestStatus.code)), { code: r.requestStatus.code }));
+        } else resolve(r.responseData || {});
+      }, reject);
+    });
+  }
+  batch(requests) {
+    return new Promise((resolve, reject) => {
+      const requestId = 'b' + (++this.seq);
+      this._send(8, { requestId, haltOnFailure: false, executionType: 0, requests }, (r) => resolve(r.results || []), reject);
+    });
+  }
+}
+
+/* =====================================================================
+ * 本番バックエンド（OBS）
+ * ===================================================================== */
+const FILTER_KIND = 'vp_video_playlist';
+
+function connConfig() {
+  const q = new URLSearchParams(location.search);
+  return {
+    host: q.get('host') || store.get('host', '127.0.0.1'),
+    port: q.get('port') || store.get('port', '4455'),
+    password: q.has('password') ? q.get('password') : store.get('password', ''),
+  };
+}
+
+class ObsBackend {
+  constructor(app) {
+    this.app = app;
+    this.sock = new ObsSocket();
+    this.sel = null;          // { sourceName, filterName }
+    this.pending = [];        // 未確認のコマンド
+    this.lastFlush = 0;
+    this.lastCmdId = 0;
+    this.pollTimer = null;
+    this.discoverTimer = null;
+    this.retryTimer = null;
+    this.wantConnected = false;
+    this.sock.addEventListener('obs', (e) => this.onEvent(e.detail));
+    this.sock.addEventListener('close', () => this.onClose());
+  }
+  get isDemo() { return false; }
+  config() { return connConfig(); }
+  async connect() {
+    clearTimeout(this.retryTimer);
+    this.wantConnected = true;
+    const c = this.config();
+    this.app.setConn('wait', '接続中…');
+    try {
+      await this.sock.connect('ws://' + c.host + ':' + c.port, c.password);
+    } catch (e) {
+      this.app.onConnectFailed(e.kind || 'closed');
+      if (e.kind !== 'auth_required' && e.kind !== 'auth_failed' && e.kind !== 'bad_url' && this.wantConnected) {
+        this.retryTimer = setTimeout(() => this.connect(), 3000);
+      }
+      return;
+    }
+    this.app.setConn('ok', '接続中: ' + c.host + ':' + c.port);
+    this.app.onConnected();
+    await this.discover();
+  }
+  disconnect() {
+    this.wantConnected = false;
+    clearTimeout(this.retryTimer);
+    clearTimeout(this.pollTimer);
+    this.sock.close();
+  }
+  onClose() {
+    clearTimeout(this.pollTimer);
+    if (!this.wantConnected) return;
+    this.app.setConn('wait', '再接続中…');
+    this.app.showBanner('warn', 'OBS との接続が切れました。再接続しています…');
+    this.retryTimer = setTimeout(() => this.connect(), 2000);
+  }
+  async discover() {
+    if (!this.sock.ready) return;
+    let inputs = [];
+    try { inputs = (await this.sock.call('GetInputList', {})).inputs || []; } catch (e) { return; }
+    const reqs = inputs.map((i) => ({ requestType: 'GetSourceFilterList', requestData: { sourceName: i.inputName } }));
+    const found = [];
+    if (reqs.length) {
+      let results = [];
+      try { results = await this.sock.batch(reqs); } catch (e) { return; }
+      results.forEach((r, idx) => {
+        if (!r.requestStatus || !r.requestStatus.result) return;
+        for (const f of (r.responseData && r.responseData.filters) || []) {
+          if (f.filterKind === FILTER_KIND) found.push({ sourceName: inputs[idx].inputName, filterName: f.filterName });
+        }
+      });
+    }
+    this.app.setPlaylists(found);
+  }
+  scheduleDiscover() {
+    clearTimeout(this.discoverTimer);
+    this.discoverTimer = setTimeout(() => this.discover(), 300);
+  }
+  select(pl) {
+    this.sel = pl;
+    this.pending = [];
+    clearTimeout(this.pollTimer);
+    if (pl) this.poll();
+  }
+  async poll() {
+    clearTimeout(this.pollTimer);
+    const sel = this.sel;
+    if (!sel || !this.sock.ready) return;
+    try {
+      const res = await this.sock.batch([
+        { requestType: 'GetSourceFilter', requestData: { sourceName: sel.sourceName, filterName: sel.filterName } },
+        { requestType: 'GetMediaInputStatus', requestData: { inputName: sel.sourceName } },
+      ]);
+      if (sel !== this.sel) return;
+      const f = res[0];
+      if (!f || !f.requestStatus.result) {
+        this.scheduleDiscover();
+      } else {
+        const fs = f.responseData.filterSettings || {};
+        this.receiveState(fs.vp_state || '', f.responseData.filterEnabled !== false);
+      }
+      const m = res[1];
+      if (m && m.requestStatus.result) {
+        const d = m.responseData;
+        this.app.setMedia({ state: d.mediaState, duration: d.mediaDuration, cursor: d.mediaCursor });
+      }
+    } catch (e) { /* 次回 */ }
+    this.pollTimer = setTimeout(() => this.poll(), document.hidden ? 1500 : 450);
+  }
+  pollSoon(ms = 120) {
+    clearTimeout(this.pollTimer);
+    this.pollTimer = setTimeout(() => this.poll(), ms);
+  }
+  receiveState(raw, enabled) {
+    let st = null;
+    if (raw) { try { st = JSON.parse(raw); } catch (e) { st = null; } }
+    if (st && this.pending.length) {
+      this.pending = this.pending.filter((c) => c.id > (st.ack || 0));
+      if (this.pending.length) {
+        if (Date.now() - this.lastFlush > 1500) this.flush();
+        return; // 楽観的な表示を保つ
+      }
+    }
+    this.app.setState(st, raw, enabled);
+  }
+  nextId() {
+    const ack = (this.app.state && this.app.state.ack) || 0;
+    this.lastCmdId = Math.max(Date.now(), this.lastCmdId + 1, ack + 1);
+    return this.lastCmdId;
+  }
+  send(cmd) {
+    if (!this.sel) return;
+    cmd.id = this.nextId();
+    this.pending.push(cmd);
+    this.flush();
+  }
+  async flush() {
+    const sel = this.sel;
+    if (!sel || !this.pending.length) return;
+    this.lastFlush = Date.now();
+    try {
+      await this.sock.call('SetSourceFilterSettings', {
+        sourceName: sel.sourceName, filterName: sel.filterName,
+        filterSettings: { vp_cmds: JSON.stringify(this.pending) }, overlay: true,
+      });
+    } catch (e) {
+      toast('OBS に送れませんでした: ' + e.message);
+    }
+    this.pollSoon(150);
+  }
+  mediaAction(action) {
+    if (!this.sel) return;
+    this.sock.call('TriggerMediaInputAction', { inputName: this.sel.sourceName, mediaAction: 'OBS_WEBSOCKET_MEDIA_INPUT_ACTION_' + action })
+      .then(() => this.pollSoon(100)).catch((e) => toast(e.message));
+  }
+  seek(ms) {
+    if (!this.sel) return;
+    this.sock.call('SetMediaInputCursor', { inputName: this.sel.sourceName, mediaCursor: Math.max(0, Math.round(ms)) })
+      .then(() => this.pollSoon(100)).catch((e) => toast(e.message));
+  }
+  openFilters() {
+    if (!this.sel) return;
+    this.sock.call('OpenInputFiltersDialog', { inputName: this.sel.sourceName })
+      .then(() => toast('OBS のフィルタ画面を開きました'))
+      .catch(() => toast('フィルタ画面を開けませんでした。ソースを右クリック →「フィルタ」から開いてください'));
+  }
+  onEvent(ev) {
+    const t = ev.eventType, d = ev.eventData || {};
+    const sel = this.sel;
+    switch (t) {
+      case 'InputNameChanged':
+        if (sel && sel.sourceName === d.oldInputName) { sel.sourceName = d.inputName; this.app.rememberSelection(sel); }
+        this.scheduleDiscover();
+        break;
+      case 'SourceFilterNameChanged':
+        if (sel && sel.sourceName === d.sourceName && sel.filterName === d.oldFilterName) { sel.filterName = d.filterName; this.app.rememberSelection(sel); }
+        this.scheduleDiscover();
+        break;
+      case 'InputCreated': case 'InputRemoved': case 'SourceFilterCreated': case 'SourceFilterRemoved':
+        this.scheduleDiscover();
+        break;
+      case 'MediaInputPlaybackStarted': case 'MediaInputPlaybackEnded': case 'MediaInputActionTriggered':
+        if (sel && d.inputName === sel.sourceName) this.pollSoon(60);
+        break;
+      default: break;
+    }
+  }
+}
+
+/* =====================================================================
+ * デモ用バックエンド（OBS なしで UI を試す）
+ * ===================================================================== */
+class DemoBackend {
+  constructor(app) {
+    this.app = app;
+    const files = [
+      ['BGV', 'オープニング.mp4', 18], ['BGV', '夜景タイムラプス_01.mp4', 26], ['BGV', '夜景タイムラプス_02.mp4', 22],
+      ['BGV', '海辺のドローン空撮.mov', 30], ['Clips', 'ハイライト 2026-09.mp4', 24], ['Clips', 'ゲーム実況_名場面集.mkv', 34],
+      ['Clips', 'loading_loop.webm', 12], ['Ending', 'エンドロール.mp4', 20],
+    ];
+    this.items = files.map(([d, n, sec], i) => ({ id: i + 1, path: '/Users/you/Movies/' + d + '/' + n, name: n, dur: sec * 1000 }));
+    this.nextIdV = this.items.length + 1;
+    this.mode = 'sequential';
+    this.loop = true;
+    this.shuffle = [];
+    this.current = 1;
+    this.ended = false;
+    this.ack = 0;
+    this.msgId = 0;
+    this.msg = null;
+    this.media = { state: 'OBS_MEDIA_STATE_PLAYING', cursor: 6500 };
+    this.last = performance.now();
+  }
+  get isDemo() { return true; }
+  connect() {
+    this.app.setConn('demo', 'デモモード');
+    this.app.onConnected();
+    this.app.setPlaylists([{ sourceName: '動画プレイリスト（デモ）', filterName: '動画プレイリスト' }]);
+    setInterval(() => this.tick(), 250);
+  }
+  disconnect() {}
+  select() { this.publish(); }
+  byId(id) { return this.items.find((i) => i.id === id); }
+  order() { return this.mode === 'random' ? this.shuffle.slice() : this.items.map((i) => i.id); }
+  shuffleIds(ids) { for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [ids[i], ids[j]] = [ids[j], ids[i]]; } return ids; }
+  makeShuffle(first) {
+    const ids = this.shuffleIds(this.items.map((i) => i.id).filter((id) => id !== first));
+    if (first && this.byId(first)) ids.unshift(first);
+    this.shuffle = ids;
+  }
+  play(id) {
+    if (!this.byId(id)) return;
+    this.current = id; this.ended = false;
+    this.media = { state: 'OBS_MEDIA_STATE_PLAYING', cursor: 0 };
+  }
+  advance(dir, auto) {
+    let ord = this.order();
+    if (!ord.length) { this.current = null; return; }
+    const pos = ord.indexOf(this.current);
+    let n = pos < 0 ? (dir > 0 ? 0 : ord.length - 1) : pos + dir;
+    if (n >= ord.length) {
+      if (auto && !this.loop) { this.ended = true; this.media.state = 'OBS_MEDIA_STATE_ENDED'; return; }
+      if (this.mode === 'random') {
+        const ids = this.shuffleIds(this.items.map((i) => i.id));
+        if (ids.length > 1 && ids[0] === this.current) { const j = 1 + Math.floor(Math.random() * (ids.length - 1)); [ids[0], ids[j]] = [ids[j], ids[0]]; }
+        this.shuffle = ids; ord = ids;
+      }
+      n = 0;
+    } else if (n < 0) n = ord.length - 1;
+    this.play(ord[n]);
+  }
+  tick() {
+    const now = performance.now();
+    const dt = now - this.last; this.last = now;
+    if (this.media.state === 'OBS_MEDIA_STATE_PLAYING' && this.current) {
+      this.media.cursor += dt;
+      const it = this.byId(this.current);
+      if (it && this.media.cursor >= it.dur) { this.advance(1, true); this.publish(true); return; }
+      this.publish(false);
+    }
+  }
+  send(c) {
+    this.ack++;
+    const ord = this.order();
+    switch (c.op) {
+      case 'add': {
+        const paths = c.paths || [];
+        const fresh = [];
+        for (const raw of paths) {
+          const p = raw.trim().replace(/^["']|["']$/g, '').replace(/\\/g, '/');
+          if (!p) continue;
+          const isFile = /\.[a-z0-9]{2,4}$/i.test(p);
+          const list = isFile ? [p] : [1, 2, 3].map((n) => p.replace(/\/$/, '') + '/clip_' + n + '.mp4');
+          for (const path of list) {
+            if (this.items.some((i) => i.path === path)) continue;
+            fresh.push({ id: this.nextIdV++, path, name: path.split('/').pop(), dur: 12000 + Math.floor(Math.random() * 20000) });
+          }
+        }
+        if (c.position === 'next' && this.current) {
+          const ci = this.items.findIndex((i) => i.id === this.current);
+          this.items.splice(ci + 1, 0, ...fresh);
+          if (this.mode === 'random') this.shuffle.splice(this.shuffle.indexOf(this.current) + 1, 0, ...fresh.map((i) => i.id));
+        } else {
+          this.items.push(...fresh);
+          if (this.mode === 'random') fresh.forEach((it) => { const cp = this.shuffle.indexOf(this.current); const at = cp + 1 + Math.floor(Math.random() * (this.shuffle.length - cp)); this.shuffle.splice(at, 0, it.id); });
+        }
+        this.msg = fresh.length ? fresh.length + '本を追加しました（デモ）' : '追加できる動画がありませんでした';
+        this.msgId++;
+        if (fresh.length && (!this.current || this.ended)) this.play(this.current ? fresh[0].id : this.order()[0]);
+        break;
+      }
+      case 'remove': {
+        const rm = new Set(c.ids);
+        let nextId = null;
+        if (rm.has(this.current)) {
+          const pos = ord.indexOf(this.current);
+          nextId = ord.slice(pos + 1).find((id) => !rm.has(id)) || (this.loop ? ord.slice(0, pos).find((id) => !rm.has(id)) : null) || null;
+        }
+        this.items = this.items.filter((i) => !rm.has(i.id));
+        this.shuffle = this.shuffle.filter((id) => !rm.has(id));
+        if (rm.has(this.current)) { if (nextId) this.play(nextId); else { this.current = null; this.media.state = 'OBS_MEDIA_STATE_STOPPED'; } }
+        break;
+      }
+      case 'clear': this.items = []; this.shuffle = []; this.current = null; this.media = { state: 'OBS_MEDIA_STATE_STOPPED', cursor: 0 }; break;
+      case 'reorder':
+        if (this.mode === 'random') this.shuffle = c.order.slice();
+        else this.items = c.order.map((id) => this.byId(id)).filter(Boolean);
+        break;
+      case 'play':
+        if (c.item && this.byId(c.item)) this.play(c.item);
+        else if (this.ended || !this.current) { if (this.mode === 'random') this.makeShuffle(null); this.play(this.order()[0]); } else this.play(this.current);
+        break;
+      case 'next': this.advance(1, false); break;
+      case 'prev': this.advance(-1, false); break;
+      case 'reshuffle': if (this.mode === 'random') this.makeShuffle(this.current); break;
+      case 'sort': {
+        const coll = new Intl.Collator('ja', { numeric: true, sensitivity: 'base' });
+        this.items.sort((a, b) => coll.compare(a.name, b.name));
+        if (this.mode === 'random') this.makeShuffle(this.current);
+        break;
+      }
+      case 'mode': if (this.mode !== c.value) { this.mode = c.value === 'random' ? 'random' : 'sequential'; if (this.mode === 'random') this.makeShuffle(this.current); } break;
+      case 'loop': this.loop = !!c.value; break;
+      default: break;
+    }
+    setTimeout(() => this.publish(), 60);
+  }
+  publish(full = true) {
+    const st = {
+      v: 1, ack: this.ack, mode: this.mode, loop: this.loop, current: this.current, ended: this.ended,
+      items: this.items.map(({ id, path, name }) => ({ id, path, name })), order: this.order(), shuffle: this.shuffle,
+      parent: '動画プレイリスト（デモ）', msg: this.msg, msg_id: this.msgId,
+    };
+    if (full) this.app.setState(st, JSON.stringify(st), true);
+    const it = this.byId(this.current);
+    this.app.setMedia({ state: this.current ? this.media.state : 'OBS_MEDIA_STATE_NONE', duration: it ? it.dur : null, cursor: this.media.cursor });
+  }
+  mediaAction(a) {
+    if (a === 'PAUSE') this.media.state = 'OBS_MEDIA_STATE_PAUSED';
+    if (a === 'PLAY') this.media.state = 'OBS_MEDIA_STATE_PLAYING';
+    this.publish(false);
+  }
+  seek(ms) { this.media.cursor = ms; this.publish(false); }
+  openFilters() { toast('デモでは OBS のフィルタ画面は開けません'); }
+}
+
+/* =====================================================================
+ * アプリ（表示と操作）
+ * ===================================================================== */
+const app = {
+  backend: null,
+  playlists: [],
+  sel: null,
+  state: null,
+  stateRaw: '',
+  enabled: true,
+  media: { state: 'OBS_MEDIA_STATE_NONE', duration: null, cursor: 0, at: 0 },
+  showPlayed: store.get('showPlayed', true),
+  lastMsgId: null,
+  dragging: false,
+  renderQueued: false,
+  focusId: null,
+
+  /* ---------- 接続まわり ---------- */
+  setConn(kind, title) {
+    const d = $('connDot');
+    d.className = 'dot ' + kind;
+    d.title = title;
+  },
+  onConnected() {
+    $('connErr').hidden = true;
+    this.hideBannerIf('conn');
+    this.show('main');
+  },
+  onConnectFailed(kind) {
+    const msgs = {
+      auth_required: 'パスワードが必要です。OBS の「接続情報を表示」で確認して入力してください。',
+      auth_failed: 'パスワードが違います。',
+      timeout: 'OBS から応答がありません。',
+      bad_url: 'ホストまたはポートが不正です。',
+      closed: 'OBS に接続できません。OBS が起動していて、WebSocket サーバーが有効か確認してください。（自動で再試行します）',
+    };
+    this.setConn('err', '未接続');
+    const e = $('connErr');
+    e.textContent = msgs[kind] || msgs.closed;
+    e.hidden = false;
+    this.show('connect');
+    if (kind === 'auth_required' || kind === 'auth_failed') $('cfgPass').focus();
+  },
+  show(which) {
+    $('main').hidden = which !== 'main';
+    $('screenConnect').hidden = which !== 'connect';
+    $('screenNone').hidden = which !== 'none';
+    $('screenLoading').hidden = which !== 'loading';
+    $('btnBack').hidden = !(which === 'connect' && this.backend && (this.backend.isDemo || (this.backend.sock && this.backend.sock.ready)));
+    this.screen = which;
+  },
+  setPlaylists(list) {
+    this.playlists = list;
+    const sel = $('plSelect');
+    if (!list.length) {
+      this.sel = null;
+      this.backend.select(null);
+      sel.hidden = true;
+      $('plName').hidden = false;
+      $('plName').textContent = '動画プレイリスト';
+      if (this.screen !== 'connect') this.show('none');
+      return;
+    }
+    const saved = store.get('selected', null);
+    const keyOf = (p) => p.sourceName + '\u0000' + p.filterName;
+    let pick = this.sel && list.find((p) => keyOf(p) === keyOf(this.sel));
+    if (!pick && saved) pick = list.find((p) => keyOf(p) === saved);
+    if (!pick) pick = list[0];
+    sel.innerHTML = list.map((p) => {
+      const label = p.filterName === '動画プレイリスト' ? p.sourceName : p.sourceName + ' / ' + p.filterName;
+      return '<option value="' + esc(keyOf(p)) + '">' + esc(label) + '</option>';
+    }).join('');
+    sel.value = keyOf(pick);
+    sel.hidden = list.length < 2;
+    $('plName').hidden = list.length >= 2;
+    $('plName').textContent = pick.sourceName;
+    $('plName').title = pick.sourceName;
+    const changed = !this.sel || keyOf(this.sel) !== keyOf(pick);
+    if (this.screen !== 'connect') this.show('main');
+    if (changed) {
+      this.sel = pick;
+      this.state = null; this.stateRaw = ''; this.lastMsgId = null;
+      this.rememberSelection(pick);
+      this.render();
+      this.backend.select(pick);
+    }
+  },
+  rememberSelection(p) {
+    store.set('selected', p.sourceName + '\u0000' + p.filterName);
+    $('plName').textContent = p.sourceName;
+  },
+
+  /* ---------- 状態の受け取り ---------- */
+  setState(st, raw, enabled) {
+    const enabledChanged = enabled !== this.enabled;
+    this.enabled = enabled;
+    if (raw === this.stateRaw && !enabledChanged) return;
+    this.stateRaw = raw;
+    this.state = st;
+    if (st && st.msg_id != null) {
+      if (this.lastMsgId !== null && st.msg_id !== this.lastMsgId && st.msg) toast(st.msg);
+      this.lastMsgId = st.msg_id;
+    }
+    this.queueRender();
+  },
+  setMedia(m) {
+    const prev = this.media.state;
+    this.media = { state: m.state, duration: m.duration, cursor: m.cursor || 0, at: performance.now() };
+    if (prev !== m.state) this.renderNow();
+    this.updateProgress();
+  },
+  queueRender() {
+    if (this.renderQueued) return;
+    this.renderQueued = true;
+    requestAnimationFrame(() => { this.renderQueued = false; this.render(); });
+  },
+
+  /* ---------- 派生データ ---------- */
+  view() {
+    const st = this.state;
+    if (!st) return { items: [], order: [], byId: new Map(), pos: -1, cur: null, next: null };
+    const byId = new Map((st.items || []).map((i) => [i.id, i]));
+    const order = (st.order || []).filter((id) => byId.has(id));
+    const pos = st.current != null ? order.indexOf(st.current) : -1;
+    const cur = pos >= 0 ? byId.get(st.current) : null;
+    let next = null, nextWrap = false;
+    if (order.length && !st.ended) {
+      if (pos < 0) next = byId.get(order[0]);
+      else if (pos + 1 < order.length) next = byId.get(order[pos + 1]);
+      else if (st.loop) { nextWrap = true; next = st.mode === 'random' ? null : byId.get(order[0]); }
+    }
+    return { items: st.items || [], order, byId, pos, cur, next, nextWrap };
+  },
+
+  /* ---------- 描画 ---------- */
+  render() {
+    if (this.dragging) return; // ドラッグ中は並びを触らない
+    const st = this.state;
+    const v = this.view();
+
+    // バナー
+    if (!this.enabled) this.showBanner('warn', '「動画プレイリスト」フィルタが無効になっています（フィルタ画面の目のアイコンで有効化）。', 'state');
+    else if (st && st.warning) this.showBanner('warn', st.warning, 'state');
+    else if (st && st.error) this.showBanner('error', st.error, 'state');
+    else if (this.backend && this.backend.isDemo) this.showBanner('demo', 'デモモードです。OBS には接続していません。', 'demo', true);
+    else this.hideBannerIf('state');
+
+    // モード・ループ
+    const random = st && st.mode === 'random';
+    $('modeSeq').classList.toggle('on', !random);
+    $('modeRand').classList.toggle('on', !!random);
+    $('btnLoop').classList.toggle('on', !st || st.loop !== false);
+    $('btnReshuffle').hidden = !random;
+    $('btnSort').hidden = !!random;
+    $('btnPlayed').classList.toggle('on', this.showPlayed);
+
+    this.renderNow(v);
+    this.renderList(v);
+
+    const n = v.order.length;
+    $('foot').innerHTML = '<span>' + n + '本</span><span class="grow"></span><span>ドラッグで並べ替え・ダブルクリックで再生</span>';
+  },
+
+  renderNow(v) {
+    v = v || this.view();
+    const st = this.state;
+    const ms = this.media.state;
+    const playing = ms === 'OBS_MEDIA_STATE_PLAYING' || ms === 'OBS_MEDIA_STATE_OPENING' || ms === 'OBS_MEDIA_STATE_BUFFERING';
+    const paused = ms === 'OBS_MEDIA_STATE_PAUSED';
+    const stEl = $('npState');
+    let label = '停止中', cls = 'idle';
+    if (!v.cur) { label = v.order.length ? '停止中' : '動画なし'; }
+    else if (st && st.ended) { label = '再生終了'; }
+    else if (playing) { label = '再生中'; cls = ''; }
+    else if (paused) { label = '一時停止'; cls = 'paused'; }
+    else if (ms === 'OBS_MEDIA_STATE_ENDED') { label = '切り替え中'; cls = ''; }
+    stEl.textContent = label;
+    stEl.className = 'state ' + cls;
+    $('npPos').textContent = v.cur ? (v.pos + 1) + ' / ' + v.order.length : (v.order.length ? v.order.length + '本' : '');
+    if (v.cur) {
+      $('npTitle').innerHTML = nameHtml(v.cur.name);
+      $('npTitle').title = v.cur.path;
+      $('npSub').innerHTML = icon('folder') + '<span>' + esc(shortDir(v.cur.path)) + '</span>';
+    } else {
+      $('npTitle').textContent = v.order.length ? '再生していません' : '—';
+      $('npTitle').title = '';
+      $('npSub').innerHTML = v.order.length ? '<span>▶ を押すと最初から再生します</span>' : '<span>「追加」から動画を登録してください</span>';
+    }
+    $('btnPlay').innerHTML = icon(playing ? 'pause' : 'play');
+    $('btnPlay').title = playing ? '一時停止 (Space)' : '再生 (Space)';
+    $('seek').classList.toggle('disabled', !v.cur || !(this.media.duration > 0));
+    let nl = '';
+    if (v.next) nl = '次: <b>' + esc(v.next.name) + '</b>' + (v.nextWrap ? '（先頭に戻る）' : '');
+    else if (v.nextWrap && st && st.mode === 'random') nl = '次: 一巡したので再シャッフルします';
+    else if (v.cur && st && !st.ended && st.loop === false && v.pos === v.order.length - 1) nl = 'この動画で最後です（繰り返しオフ）';
+    $('nextLine').innerHTML = nl;
+    this.updateProgress();
+  },
+
+  cursorNow() {
+    const m = this.media;
+    let c = m.cursor || 0;
+    if (m.state === 'OBS_MEDIA_STATE_PLAYING') c += performance.now() - m.at;
+    if (m.duration > 0) c = Math.min(c, m.duration);
+    return c;
+  },
+  updateProgress() {
+    const m = this.media;
+    const c = this.seekPreview != null ? this.seekPreview : this.cursorNow();
+    const pct = m.duration > 0 ? Math.max(0, Math.min(100, (c / m.duration) * 100)) : 0;
+    $('seekFill').style.width = pct + '%';
+    $('seekKnob').style.left = pct + '%';
+    $('tCur').textContent = fmtTime(c);
+    $('tDur').textContent = m.duration > 0 ? fmtTime(m.duration) : '--:--';
+    const mini = document.querySelector('.row.current .mini-progress i');
+    if (mini) mini.style.width = pct + '%';
+    const eq = document.querySelector('.row.current .eq');
+    if (eq) eq.classList.toggle('on', m.state === 'OBS_MEDIA_STATE_PLAYING');
+  },
+
+  renderList(v) {
+    const list = $('list');
+    const st = this.state;
+    $('emptyList').hidden = v.order.length > 0;
+    const loopWrap = st && st.loop !== false && !st.ended;
+    let html = '';
+    const rowHtml = (id, idx) => {
+      const it = v.byId.get(id);
+      const isCur = idx === v.pos;
+      const played = v.pos >= 0 && idx < v.pos;
+      const isNext = v.next && v.next.id === id && !isCur;
+      const cls = ['row', isCur ? 'current' : '', played ? 'played' : ''].join(' ');
+      const lead = isCur
+        ? '<span class="eq"><i></i><i></i><i></i></span>'
+        : '<span class="num">' + (idx + 1) + '</span>';
+      return '<li class="' + cls + '" data-id="' + id + '" tabindex="0" title="' + esc(it.path) + '">'
+        + '<span class="grip">' + icon('grip') + '</span>' + lead
+        + '<div class="meta"><div class="name">' + nameHtml(it.name) + '</div><div class="dir">' + esc(dirOf(it.path)) + '</div></div>'
+        + (isNext ? '<span class="badge">次</span>' : '')
+        + '<span class="row-actions">'
+        + (isCur ? '' : '<button class="mini" data-act="upnext" title="次に再生する">' + icon('upnext') + '</button>')
+        + '<button class="mini" data-act="play" title="今すぐ再生">' + icon('playnow') + '</button>'
+        + '<button class="mini rm" data-act="remove" title="リストから削除">' + icon('x') + '</button>'
+        + '</span>'
+        + (isCur ? '<div class="mini-progress"><i></i></div>' : '')
+        + '</li>';
+    };
+    const playedCount = v.pos > 0 ? v.pos : 0;
+    if (playedCount && !this.showPlayed) {
+      html += '<li class="section-label" data-label="1">再生済み ' + playedCount + '本を非表示中</li>';
+    }
+    v.order.forEach((id, idx) => {
+      if (!this.showPlayed && idx < v.pos) return;
+      html += rowHtml(id, idx);
+    });
+    if (loopWrap && v.order.length > 1 && v.pos >= 0) {
+      html += '<li class="section-label" data-label="1">' + (st.mode === 'random' ? '↻ 最後まで再生したら再シャッフルして続けます' : '↻ 最後まで再生したら先頭に戻ります') + '</li>';
+    }
+    list.innerHTML = html;
+    this.updateProgress();
+    if (this.focusId != null) {
+      const el = list.querySelector('.row[data-id="' + this.focusId + '"]');
+      if (el) el.focus({ preventScroll: true });
+      this.focusId = null;
+    }
+    // 再生中の動画が切り替わったら見える位置へ
+    const curId = st ? st.current : null;
+    if (curId !== this.lastScrolledCur) {
+      this.lastScrolledCur = curId;
+      const el = list.querySelector('.row.current');
+      if (el) this.scrollIntoViewSoft(el);
+    }
+  },
+  scrollIntoViewSoft(el) {
+    const wrap = $('listWrap');
+    const r = el.getBoundingClientRect(), w = wrap.getBoundingClientRect();
+    if (r.top < w.top + 4 || r.bottom > w.bottom - 4) {
+      wrap.scrollTop += (r.top - w.top) - 8;
+    }
+  },
+
+  showBanner(kind, text, tag, small) {
+    const b = $('banner');
+    b.className = 'banner ' + (kind === 'error' ? 'error' : kind === 'demo' ? 'demo' : '');
+    b.innerHTML = icon(kind === 'demo' ? 'info' : 'alert') + '<div>' + esc(text) + (kind === 'demo' ? ' <button class="link" id="bannerConnect">OBS に接続する</button>' : '') + '</div>';
+    b.dataset.tag = tag || 'conn';
+    b.hidden = false;
+    const bc = $('bannerConnect');
+    if (bc) bc.onclick = () => { location.search = ''; };
+  },
+  hideBannerIf(tag) {
+    const b = $('banner');
+    if (!b.hidden && b.dataset.tag === tag) b.hidden = true;
+  },
+
+  /* ---------- 操作 ---------- */
+  cmd(op, args, optimistic) {
+    if (!this.sel) return;
+    const c = Object.assign({ op }, args || {});
+    if (optimistic && this.state) {
+      const s = JSON.parse(JSON.stringify(this.state));
+      optimistic(s);
+      this.state = s;
+      this.render();
+    }
+    this.backend.send(c);
+  },
+  reorderTo(newOrder) {
+    this.cmd('reorder', { order: newOrder }, (s) => {
+      s.order = newOrder.slice();
+      if (s.mode === 'random') s.shuffle = newOrder.slice();
+      else { const by = new Map(s.items.map((i) => [i.id, i])); s.items = newOrder.map((id) => by.get(id)).filter(Boolean); }
+    });
+  },
+  removeIds(ids) {
+    const set = new Set(ids);
+    this.cmd('remove', { ids }, (s) => {
+      s.items = s.items.filter((i) => !set.has(i.id));
+      s.order = s.order.filter((id) => !set.has(id));
+      if (s.shuffle) s.shuffle = s.shuffle.filter((id) => !set.has(id));
+    });
+  },
+  moveUpNext(id) {
+    const v = this.view();
+    if (v.pos < 0) return;
+    const ord = v.order.filter((x) => x !== id);
+    const cp = ord.indexOf(this.state.current);
+    ord.splice(cp + 1, 0, id);
+    this.reorderTo(ord);
+    toast('次に再生します');
+  },
+  playId(id) {
+    this.cmd('play', { item: id }, (s) => { s.current = id; s.ended = false; });
+  },
+  togglePlay() {
+    const ms = this.media.state;
+    const v = this.view();
+    if (!v.order.length) { this.openAdd(); return; }
+    if (ms === 'OBS_MEDIA_STATE_PLAYING' || ms === 'OBS_MEDIA_STATE_OPENING' || ms === 'OBS_MEDIA_STATE_BUFFERING') this.backend.mediaAction('PAUSE');
+    else if (ms === 'OBS_MEDIA_STATE_PAUSED' && v.cur && !(this.state && this.state.ended)) this.backend.mediaAction('PLAY');
+    else this.cmd('play', {});
+  },
+  setMode(mode) {
+    if (!this.state || this.state.mode === mode) return;
+    this.cmd('mode', { value: mode }, (s) => { s.mode = mode; });
+  },
+  toggleLoop() {
+    const on = !(this.state && this.state.loop !== false);
+    this.cmd('loop', { value: on }, (s) => { s.loop = on; });
+    toast(on ? '繰り返し: オン（最後まで再生したら最初から）' : '繰り返し: オフ（最後の動画で止まります）');
+  },
+  openAdd() {
+    $('addPanel').hidden = false;
+    $('addRecursive').checked = store.get('recursive', false);
+    setTimeout(() => $('addPaths').focus(), 0);
+  },
+  closeAdd() { $('addPanel').hidden = true; },
+  submitAdd() {
+    const lines = $('addPaths').value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    if (!lines.length) { toast('パスを入力してください'); return; }
+    const recursive = $('addRecursive').checked;
+    store.set('recursive', recursive);
+    this.cmd('add', { paths: lines, recursive, position: $('addPosition').value });
+    $('addPaths').value = '';
+    this.closeAdd();
+  },
+  confirmClear() {
+    const b = $('btnClear');
+    if (b.dataset.armed) {
+      delete b.dataset.armed;
+      b.classList.remove('danger-confirm');
+      b.innerHTML = icon('trash');
+      this.cmd('clear', {}, (s) => { s.items = []; s.order = []; s.shuffle = []; s.current = null; });
+      return;
+    }
+    if (!this.state || !this.view().order.length) return;
+    b.dataset.armed = '1';
+    b.classList.add('danger-confirm');
+    b.style.width = 'auto';
+    b.innerHTML = '<span style="padding:0 8px;font-size:12px">全削除？</span>';
+    toast('もう一度押すとすべて削除します');
+    setTimeout(() => {
+      if (b.dataset.armed) { delete b.dataset.armed; b.classList.remove('danger-confirm'); b.style.width = ''; b.innerHTML = icon('trash'); }
+    }, 3000);
+  },
+};
+
+/* =====================================================================
+ * ドラッグで並べ替え
+ * ===================================================================== */
+function setupDrag() {
+  const list = $('list');
+  const wrap = $('listWrap');
+  list.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    const row = e.target.closest('.row');
+    if (!row || e.target.closest('button')) return;
+    const sx = e.clientX, sy = e.clientY;
+    let drag = null;
+    const move = (ev) => {
+      if (!drag) {
+        if (Math.abs(ev.clientY - sy) < 5 && Math.abs(ev.clientX - sx) < 5) return;
+        drag = begin(row, ev);
+      }
+      update(drag, ev);
+    };
+    const up = (ev) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      if (drag) finish(drag, ev.type === 'pointercancel');
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+  });
+
+  function begin(row, ev) {
+    app.dragging = true;
+    document.body.classList.add('dragging');
+    const r = row.getBoundingClientRect();
+    const ghost = row.cloneNode(true);
+    ghost.classList.add('drag-ghost');
+    ghost.style.left = r.left + 'px';
+    ghost.style.top = r.top + 'px';
+    ghost.style.width = r.width + 'px';
+    document.body.appendChild(ghost);
+    row.classList.add('placeholder');
+    const before = currentOrder();
+    const d = { row, ghost, offY: ev.clientY - r.top, x: r.left, y: ev.clientY, before, raf: 0 };
+    const loop = () => {
+      const w = wrap.getBoundingClientRect();
+      const edge = 36;
+      let dy = 0;
+      if (d.y < w.top + edge) dy = -Math.ceil((w.top + edge - d.y) / 4);
+      else if (d.y > w.bottom - edge) dy = Math.ceil((d.y - (w.bottom - edge)) / 4);
+      if (dy) { wrap.scrollTop += dy; place(d); }
+      d.raf = requestAnimationFrame(loop);
+    };
+    d.raf = requestAnimationFrame(loop);
+    return d;
+  }
+  function update(d, ev) {
+    d.y = ev.clientY;
+    d.ghost.style.top = (ev.clientY - d.offY) + 'px';
+    place(d);
+  }
+  function place(d) {
+    const rows = [...list.querySelectorAll('.row')].filter((r) => r !== d.row);
+    let ref = null;
+    for (const r of rows) {
+      const b = r.getBoundingClientRect();
+      if (d.y < b.top + b.height / 2) { ref = r; break; }
+    }
+    if (!ref) ref = tailLabel();
+    if (ref === d.row.nextElementSibling || (!ref && d.row === list.lastElementChild)) return;
+    // FLIP アニメーション（ずれた行をなめらかに動かす）
+    const first = new Map(rows.map((r) => [r, r.getBoundingClientRect().top]));
+    if (ref) list.insertBefore(d.row, ref); else list.appendChild(d.row);
+    for (const r of rows) {
+      const dy = first.get(r) - r.getBoundingClientRect().top;
+      if (dy) {
+        r.style.transition = 'none';
+        r.style.transform = 'translateY(' + dy + 'px)';
+        requestAnimationFrame(() => { r.style.transition = 'transform .14s ease'; r.style.transform = ''; });
+      }
+    }
+  }
+  // 末尾に置くときは、リスト最後の「ループ説明」ラベルより前に入れる
+  function tailLabel() {
+    const last = list.lastElementChild;
+    return last && last.classList.contains('section-label') ? last : null;
+  }
+  function currentOrder() {
+    return [...list.querySelectorAll('.row')].map((r) => Number(r.dataset.id));
+  }
+  function finish(d, cancel) {
+    cancelAnimationFrame(d.raf);
+    d.ghost.remove();
+    d.row.classList.remove('placeholder');
+    document.body.classList.remove('dragging');
+    list.querySelectorAll('.row').forEach((r) => { r.style.transform = ''; r.style.transition = ''; });
+    app.dragging = false;
+    const after = currentOrder();
+    if (cancel || after.join(',') === d.before.join(',')) { app.render(); return; }
+    // 非表示中の再生済みを先頭に戻して全体の順序にする
+    const v = app.view();
+    const hidden = v.order.filter((id) => !after.includes(id));
+    app.focusId = Number(d.row.dataset.id);
+    app.reorderTo(hidden.concat(after));
+  }
+}
+
+/* =====================================================================
+ * シーク
+ * ===================================================================== */
+function setupSeek() {
+  const seek = $('seek');
+  const at = (ev) => {
+    const r = seek.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * (app.media.duration || 0);
+  };
+  seek.addEventListener('pointerdown', (e) => {
+    if (seek.classList.contains('disabled') || e.button !== 0) return;
+    seek.setPointerCapture(e.pointerId);
+    app.seekPreview = at(e);
+    app.updateProgress();
+    const move = (ev) => { app.seekPreview = at(ev); app.updateProgress(); };
+    const up = (ev) => {
+      seek.removeEventListener('pointermove', move);
+      seek.removeEventListener('pointerup', up);
+      const ms = at(ev);
+      app.seekPreview = null;
+      app.media.cursor = ms; app.media.at = performance.now();
+      app.backend.seek(ms);
+      app.updateProgress();
+    };
+    seek.addEventListener('pointermove', move);
+    seek.addEventListener('pointerup', up);
+  });
+}
+
+/* =====================================================================
+ * ファイルのドロップ（環境によってはパスを取得できない）
+ * ===================================================================== */
+function setupDrop() {
+  let depth = 0;
+  const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].some((t) => t === 'Files' || t === 'text/uri-list');
+  window.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth++; $('dropOverlay').hidden = false; });
+  window.addEventListener('dragover', (e) => { if (!hasFiles(e)) return; e.preventDefault(); });
+  window.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) $('dropOverlay').hidden = true; });
+  window.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth = 0; $('dropOverlay').hidden = true;
+    const dt = e.dataTransfer;
+    const text = (dt.getData('text/uri-list') || '') + '\n' + (dt.getData('text/plain') || '');
+    const paths = [];
+    text.split(/\r?\n/).map((s) => s.trim()).filter((s) => s && !s.startsWith('#')).forEach((s) => {
+      if (/^file:\/\//i.test(s)) paths.push(s);
+      else if (/^([a-z]:[\\/]|\/)/i.test(s)) paths.push(s);
+    });
+    [...(dt.files || [])].forEach((f) => { if (f.path) paths.push(f.path); });
+    const uniq = [...new Set(paths)];
+    if (uniq.length) {
+      app.cmd('add', { paths: uniq, recursive: store.get('recursive', false), position: 'end' });
+    } else {
+      toast('ドロップからはパスを取得できませんでした。「追加」にパスを貼り付けるか「ファイル選択で追加…」を使ってください', 5000);
+    }
+  });
+}
+
+/* =====================================================================
+ * 起動
+ * ===================================================================== */
+function bind() {
+  $('btnPrev').onclick = () => app.cmd('prev');
+  $('btnNext').onclick = () => app.cmd('next');
+  $('btnPlay').onclick = () => app.togglePlay();
+  $('modeSeq').onclick = () => app.setMode('sequential');
+  $('modeRand').onclick = () => app.setMode('random');
+  $('btnLoop').onclick = () => app.toggleLoop();
+  $('btnAdd').onclick = () => ($('addPanel').hidden ? app.openAdd() : app.closeAdd());
+  $('addCancel').onclick = () => app.closeAdd();
+  $('addSubmit').onclick = () => app.submitAdd();
+  $('addDialog').onclick = () => app.backend.openFilters();
+  $('addPaths').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); app.submitAdd(); } });
+  $('btnSort').onclick = () => { app.cmd('sort'); toast('ファイル名順に並べ替えました'); };
+  $('btnReshuffle').onclick = () => { app.cmd('reshuffle'); toast('未再生の順番をシャッフルし直しました'); };
+  $('btnPlayed').onclick = () => { app.showPlayed = !app.showPlayed; store.set('showPlayed', app.showPlayed); app.render(); };
+  $('btnClear').onclick = () => app.confirmClear();
+  $('plSelect').onchange = (e) => {
+    const p = app.playlists.find((x) => x.sourceName + '\u0000' + x.filterName === e.target.value);
+    if (p) { store.set('selected', e.target.value); app.sel = null; app.setPlaylists(app.playlists); }
+  };
+  $('btnRescan').onclick = () => app.backend.discover && app.backend.discover();
+
+  // 接続設定画面
+  $('btnSettings').onclick = () => {
+    if (app.screen === 'connect' && !$('btnBack').hidden) { app.show(app.playlists.length ? 'main' : 'none'); return; }
+    const c = connConfig();
+    $('cfgHost').value = c.host; $('cfgPort').value = c.port; $('cfgPass').value = c.password;
+    app.show('connect');
+  };
+  $('btnBack').onclick = () => app.show(app.playlists.length ? 'main' : 'none');
+  $('btnConnect').onclick = () => {
+    store.set('host', $('cfgHost').value.trim() || '127.0.0.1');
+    store.set('port', $('cfgPort').value.trim() || '4455');
+    store.set('password', $('cfgPass').value);
+    if (app.backend) app.backend.disconnect();
+    if (app.backend && app.backend.isDemo) { location.search = ''; return; }
+    app.backend = new ObsBackend(app);
+    app.sel = null; app.playlists = [];
+    app.backend.connect();
+  };
+  $('cfgPass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btnConnect').click(); });
+  $('btnDemo').onclick = () => { location.search = '?demo'; };
+
+  // リスト操作
+  const list = $('list');
+  list.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-act]');
+    if (!b) return;
+    const id = Number(b.closest('.row').dataset.id);
+    if (b.dataset.act === 'play') app.playId(id);
+    else if (b.dataset.act === 'remove') app.removeIds([id]);
+    else if (b.dataset.act === 'upnext') app.moveUpNext(id);
+  });
+  list.addEventListener('dblclick', (e) => {
+    const row = e.target.closest('.row');
+    if (row && !e.target.closest('button')) app.playId(Number(row.dataset.id));
+  });
+  list.addEventListener('keydown', (e) => {
+    const row = e.target.closest('.row');
+    if (!row) return;
+    const id = Number(row.dataset.id);
+    const rows = [...list.querySelectorAll('.row')];
+    const i = rows.indexOf(row);
+    if (e.key === 'Enter') { e.preventDefault(); app.playId(id); }
+    else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      const nb = rows[i + 1] || rows[i - 1];
+      app.focusId = nb ? Number(nb.dataset.id) : null;
+      app.removeIds([id]);
+    } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && e.altKey) {
+      e.preventDefault();
+      const ord = app.view().order.slice();
+      const p = ord.indexOf(id), q = p + (e.key === 'ArrowUp' ? -1 : 1);
+      if (q < 0 || q >= ord.length) return;
+      [ord[p], ord[q]] = [ord[q], ord[p]];
+      app.focusId = id;
+      app.reorderTo(ord);
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const t = rows[i + (e.key === 'ArrowUp' ? -1 : 1)];
+      if (t) t.focus();
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === ' ' && !/^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(document.activeElement.tagName) && app.screen === 'main') {
+      e.preventDefault();
+      app.togglePlay();
+    }
+  });
+
+  setupDrag();
+  setupSeek();
+  setupDrop();
+}
+
+function frame() {
+  if (app.media.state === 'OBS_MEDIA_STATE_PLAYING' || app.seekPreview != null) app.updateProgress();
+  requestAnimationFrame(frame);
+}
+
+hydrateIcons(document);
+bind();
+const params = new URLSearchParams(location.search);
+if (params.has('demo')) {
+  app.backend = new DemoBackend(app);
+  app.show('main');
+  app.backend.connect();
+} else {
+  app.backend = new ObsBackend(app);
+  const c = app.backend.config();
+  $('cfgHost').value = c.host; $('cfgPort').value = c.port; $('cfgPass').value = c.password;
+  app.show('loading');
+  app.backend.connect();
+}
+app.render();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
