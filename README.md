@@ -127,13 +127,10 @@
 - v1.0.1：フィルタを付けたソースの大きさが 0×0 になり、画面に映らないことがある問題を修正
 - v1.0.0：最初のリリース
 
-## 新しいバージョンの公開手順（メンテナー向け）
+## 新しいバージョンの公開（メンテナー向け）
 
-1. `obs-video-playlist.lua` 冒頭の `VERSION` を上げ、README の更新履歴に追記して main に push
-2. GitHub の **Releases → Draft a new release** で、タグに `v` + 同じバージョン（例：`v1.0.2`）を新規作成し、変更点を書いて **Publish release**
-
-公開すると GitHub Actions が配布用 zip（`obs-video-playlist-v1.0.2.zip`）を作って、その Release に自動で添付します（1分ほどかかります）。
-`VERSION` とタグが食い違っていると zip は添付されません（Actions タブにエラーが出ます）。
+GitHub で Release を公開すると、配布用 zip が自動で作られて添付されます。
+手順は [docs/RELEASING.md](docs/RELEASING.md) を見てください。
 
 ## ライセンス
 
