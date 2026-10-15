@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>動画プレイリスト</title>
 <!--
-  動画プレイリスト ドック (video-playlist-dock.html) v1.0.1
+  動画プレイリスト ドック (video-playlist-dock.html) v1.1.0
   OBS の「ドック → カスタムブラウザドック」に、このファイルの file:/// URL を登録して使います。
   obs-websocket（OBS 28 以降に内蔵）で OBS と通信します。
   URL パラメータ: ?port=4455&password=xxxx&host=127.0.0.1  /  ?demo （OBS なしで動作確認）
@@ -31,7 +31,7 @@
   --warn-tint: rgba(233, 180, 76, 0.14);
   --ok: #43c486;
   --radius: 8px;
-  --row-h: 48px;
+  --row-h: 52px;
   --font: "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo UI", "Noto Sans JP", system-ui, sans-serif;
   --mono: "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
   color-scheme: dark;
@@ -214,10 +214,28 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .mini.rm:hover { color: var(--danger); background: var(--danger-tint); }
 .mini svg { width: 15px; height: 15px; }
 
-.row.played .meta, .row.played .num { opacity: .45; }
+.thumb {
+  width: 64px; height: 36px; flex: none; position: relative; overflow: hidden;
+  border-radius: 4px; background: #101117; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06);
+  display: flex; align-items: center; justify-content: center;
+}
+.thumb img, .thumb canvas { display: block; width: 100%; height: 100%; object-fit: cover; }
+.thumb .ext-tag { font-size: 9px; font-weight: 700; letter-spacing: .05em; color: var(--faint); }
+.thumb.loading::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, .07) 50%, transparent 80%);
+  background-size: 200% 100%; animation: shimmer 1.2s linear infinite;
+}
+@keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+.dur { flex: none; min-width: 34px; text-align: right; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.dur.unknown { color: var(--faint); }
+.row:hover .dur, .row:focus-within .dur { display: none; }
+
+.row.played .meta, .row.played .num, .row.played .thumb, .row.played .dur { opacity: .45; }
 .row.current { background: var(--accent-tint); }
 .row.current::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 2px; background: var(--accent); }
 .row.current .name { font-weight: 650; color: #fff; }
+.row.current .thumb { box-shadow: 0 0 0 1.5px var(--accent); }
 .row.current .mini-progress { position: absolute; left: 10px; right: 10px; bottom: 2px; height: 2px; background: rgba(255, 255, 255, .08); border-radius: 1px; overflow: hidden; }
 .row.current .mini-progress i { display: block; height: 100%; width: 0; background: var(--accent); }
 
@@ -247,6 +265,7 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 
 .foot { border-top: 1px solid var(--border-soft); padding: 6px 12px; font-size: 11px; color: var(--faint); display: flex; gap: 10px; white-space: nowrap; overflow: hidden; }
 .foot .grow { flex: 1; }
+.foot .total { color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* ---------- 画面（接続・未検出） ---------- */
 .screen { flex: 1; overflow-y: auto; padding: 18px 16px; }
@@ -286,6 +305,7 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
   .seg button span { display: none; }
   .btn .lbl-opt { display: none; }
   .num { width: 18px; }
+  .thumb { width: 48px; height: 27px; }
 }
 @media (max-height: 360px) {
   .now-sub, .next-line { display: none; }
@@ -483,6 +503,16 @@ function dirOf(path) {
   if (!parts.length) return '/';
   return (parts.length > 1 ? '…/' : '') + parts.slice(-1)[0];
 }
+function extTag(item) {
+  if (isUrlPath(item.path)) return 'URL';
+  const i = item.name.lastIndexOf('.');
+  return i > 0 ? item.name.slice(i + 1).toUpperCase().slice(0, 4) : 'VIDEO';
+}
+function durHtml(item) {
+  const d = thumbs.durationOf(item);
+  return d > 0 ? '<span class="dur">' + fmtTime(d) + '</span>' : '<span class="dur unknown" title="長さはまだ分かりません">--:--</span>';
+}
+
 // 再生中カード用：フォルダの末尾3階層だけを表示
 function shortDir(path) {
   if (/^[a-z][\w+.-]*:\/\//i.test(path)) return dirOf(path);
@@ -542,6 +572,212 @@ async function sha256b64(str) {
   digest.forEach((b) => { bin += String.fromCharCode(b); });
   return btoa(bin);
 }
+
+/* =====================================================================
+ * サムネイルと再生時間
+ *   1. ドック自身で動画を読み込み、長さとサムネイルを取る（ブラウザが読める形式）
+ *   2. 読めない形式は、OBS で再生されたときに長さ（スクリプトが記録）と
+ *      スクリーンショット（obs-websocket）を取って覚えておく
+ * ===================================================================== */
+const THUMB_W = 160, THUMB_H = 90;
+const SHOT_MAX_TRIES = 3;      // OBS のスクリーンショットが失敗したときに試す回数
+const SHOT_RETRY_MS = 3000;    // 失敗後、次に試すまでの間隔
+const META_MAX = 300;
+
+function isUrlPath(path) { return /^[a-z][\w+.-]*:\/\//i.test(path) && !/^file:/i.test(path); }
+
+function fileUrl(path) {
+  if (isUrlPath(path)) return null;
+  let p = path.replace(/\\/g, '/');
+  if (p.startsWith('//')) {
+    const parts = p.slice(2).split('/');
+    return 'file://' + parts.map((x, i) => (i === 0 ? x : encodeURIComponent(x))).join('/');
+  }
+  if (!p.startsWith('/')) p = '/' + p;
+  return 'file://' + p.split('/').map((x) => (/^[a-z]:$/i.test(x) ? x : encodeURIComponent(x))).join('/');
+}
+
+const thumbs = {
+  mem: new Map(),
+  saved: store.get('meta', {}),
+  queue: [],
+  active: 0,
+  max: 2,
+  saveTimer: null,
+  observer: null,
+
+  get(path) {
+    let e = this.mem.get(path);
+    if (!e) {
+      const sv = this.saved[path];
+      e = { dur: (sv && sv.d) || null, url: (sv && sv.t) || null, el: null, state: sv && sv.t ? 'ok' : 'none' };
+      this.mem.set(path, e);
+    }
+    return e;
+  },
+  durationOf(item) {
+    if (item.dur > 0) return item.dur;
+    return this.get(item.path).dur || null;
+  },
+  want(path) {
+    const e = this.get(path);
+    if (e.state !== 'none') return;
+    e.state = 'queued';
+    this.queue.push(path);
+    this.pump();
+  },
+  pump() {
+    while (this.active < this.max && this.queue.length) this.probe(this.queue.shift());
+  },
+  probe(path) {
+    const e = this.get(path);
+    if (app.backend && app.backend.isDemo) { this.demo(path, e); return; }
+    const url = fileUrl(path);
+    if (!url) { e.state = 'fail'; this.notify(path); return; }
+    this.active++;
+    e.state = 'loading';
+    this.notify(path);
+    const v = document.createElement('video');
+    v.muted = true;
+    v.preload = 'auto';
+    v.playsInline = true;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      v.removeAttribute('src');
+      try { v.load(); } catch (err) { /* ignore */ }
+      if (e.state === 'loading') e.state = e.url || e.el ? 'ok' : 'fail';
+      this.active--;
+      this.notify(path);
+      this.pump();
+    };
+    const timer = setTimeout(finish, 12000);
+    v.addEventListener('loadedmetadata', () => {
+      if (isFinite(v.duration) && v.duration > 0) this.setDuration(path, Math.round(v.duration * 1000));
+      if (!v.videoWidth) { finish(); return; }
+      const d = isFinite(v.duration) ? v.duration : 2;
+      v.currentTime = Math.min(Math.max(d * 0.1, 0.3), 8, d / 2);
+    });
+    v.addEventListener('seeked', () => {
+      const c = document.createElement('canvas');
+      c.width = THUMB_W;
+      c.height = THUMB_H;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, THUMB_W, THUMB_H);
+      const k = Math.min(THUMB_W / v.videoWidth, THUMB_H / v.videoHeight);
+      const w = v.videoWidth * k, h = v.videoHeight * k;
+      try { ctx.drawImage(v, (THUMB_W - w) / 2, (THUMB_H - h) / 2, w, h); } catch (err) { finish(); return; }
+      e.el = c;
+      e.state = 'ok';
+      // ローカルファイルの画像は環境によって読み出せない（表示はできる）。読み出せたときだけ保存する
+      try {
+        const data = c.toDataURL('image/jpeg', 0.72);
+        e.url = data;
+        this.remember(path, { t: data });
+      } catch (err) { /* 表示のみ */ }
+      finish();
+    }, { once: true });
+    v.addEventListener('error', finish);
+    v.src = url;
+  },
+  // デモ用：それらしい絵を描く
+  demo(path, e) {
+    let h = 0;
+    for (const ch of path) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    const hue = h % 360;
+    const c = document.createElement('canvas');
+    c.width = THUMB_W;
+    c.height = THUMB_H;
+    const ctx = c.getContext('2d');
+    const g = ctx.createLinearGradient(0, 0, 0, THUMB_H);
+    g.addColorStop(0, 'hsl(' + hue + ',55%,58%)');
+    g.addColorStop(1, 'hsl(' + ((hue + 40) % 360) + ',45%,22%)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, THUMB_W, THUMB_H);
+    ctx.fillStyle = 'hsla(' + ((hue + 180) % 360) + ',70%,80%,.85)';
+    ctx.beginPath();
+    ctx.arc(30 + (h % 100), 28 + (h % 17), 10 + (h % 7), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'hsla(' + hue + ',35%,12%,.9)';
+    ctx.beginPath();
+    ctx.moveTo(0, THUMB_H);
+    for (let x = 0; x <= THUMB_W; x += 16) ctx.lineTo(x, 58 + 14 * Math.sin((x + h) / 23));
+    ctx.lineTo(THUMB_W, THUMB_H);
+    ctx.fill();
+    e.url = c.toDataURL('image/jpeg', 0.8);
+    e.state = 'ok';
+    this.notify(path);
+  },
+  setDuration(path, ms) {
+    const e = this.get(path);
+    if (!(ms > 0) || e.dur === ms) return;
+    e.dur = ms;
+    this.remember(path, { d: ms });
+    this.notify(path);
+  },
+  setShot(path, dataUrl) {
+    const e = this.get(path);
+    e.url = dataUrl;
+    e.state = 'ok';
+    this.remember(path, { t: dataUrl });
+    this.notify(path);
+  },
+  remember(path, patch) {
+    if (app.backend && app.backend.isDemo) return;
+    this.saved[path] = Object.assign(this.saved[path] || {}, patch, { at: Date.now() });
+    clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => this.persist(), 800);
+  },
+  persist() {
+    let keys = Object.keys(this.saved);
+    if (keys.length > META_MAX) {
+      keys.sort((a, b) => (this.saved[b].at || 0) - (this.saved[a].at || 0));
+      keys.slice(META_MAX).forEach((k) => { delete this.saved[k]; });
+    }
+    try {
+      localStorage.setItem('vp:meta', JSON.stringify(this.saved));
+    } catch (err) {
+      // 容量オーバー：古い画像から捨てて、長さだけは残す
+      keys = Object.keys(this.saved).sort((a, b) => (this.saved[a].at || 0) - (this.saved[b].at || 0));
+      keys.slice(0, Math.ceil(keys.length / 2)).forEach((k) => { delete this.saved[k].t; });
+      try { localStorage.setItem('vp:meta', JSON.stringify(this.saved)); } catch (err2) { /* 諦める */ }
+    }
+  },
+  notify(path) { app.onMeta(path); },
+
+  // 一覧の行に画像を入れ、見えている行だけ読み込みを始める
+  fill(root) {
+    if (!this.observer && 'IntersectionObserver' in window) {
+      this.observer = new IntersectionObserver((entries) => {
+        entries.forEach((en) => {
+          if (!en.isIntersecting) return;
+          this.observer.unobserve(en.target);
+          this.want(en.target.dataset.path);
+        });
+      }, { root: $('listWrap'), rootMargin: '240px 0px' });
+    }
+    root.querySelectorAll('.thumb[data-path]').forEach((slot) => {
+      const path = slot.dataset.path;
+      this.paint(slot, path);
+      if (this.get(path).state === 'none') {
+        if (this.observer) this.observer.observe(slot); else this.want(path);
+      }
+    });
+  },
+  paint(slot, path) {
+    const e = this.get(path);
+    slot.classList.toggle('loading', e.state === 'loading' || e.state === 'queued');
+    if (e.url) {
+      const img = slot.querySelector('img');
+      if (!img || img.getAttribute('src') !== e.url) slot.innerHTML = '<img alt="" draggable="false" src="' + e.url + '">';
+    } else if (e.el) {
+      if (e.el.parentNode !== slot) { slot.innerHTML = ''; slot.appendChild(e.el); }
+    }
+  },
+};
 
 /* =====================================================================
  * obs-websocket v5 クライアント
@@ -654,6 +890,9 @@ class ObsBackend {
     this.discoverTimer = null;
     this.retryTimer = null;
     this.wantConnected = false;
+    this.shotTried = new Set();   // 撮影中・撮影済み・諦めた動画
+    this.shotFails = new Map();   // 動画ごとの撮影失敗回数
+    this.curSeen = null;
     this.sock.addEventListener('obs', (e) => this.onEvent(e.detail));
     this.sock.addEventListener('close', () => this.onClose());
   }
@@ -739,9 +978,39 @@ class ObsBackend {
       if (m && m.requestStatus.result) {
         const d = m.responseData;
         this.app.setMedia({ state: d.mediaState, duration: d.mediaDuration, cursor: d.mediaCursor });
+        this.maybeShoot(sel, d);
       }
     } catch (e) { /* 次回 */ }
     this.pollTimer = setTimeout(() => this.poll(), document.hidden ? 1500 : 450);
+  }
+  // ドックで読めなかった動画は、OBS で再生中の画面を撮ってサムネイルにする
+  maybeShoot(sel, m) {
+    const st = this.app.state;
+    if (!st || st.current == null) { this.curSeen = null; return; }
+    const it = (st.items || []).find((i) => i.id === st.current);
+    if (!it || isUrlPath(it.path)) return;
+    if (!this.curSeen || this.curSeen.id !== it.id) { this.curSeen = { id: it.id, at: Date.now() }; return; }
+    const e = thumbs.get(it.path);
+    if (e.url || e.el || this.shotTried.has(it.path)) return;
+    if (e.state === 'loading' || e.state === 'queued') return;
+    // 切り替え直後の前の動画を撮らないよう、同じ動画が2秒以上続いてから撮る
+    if (Date.now() - this.curSeen.at < 2000) return;
+    if (m.mediaState !== 'OBS_MEDIA_STATE_PLAYING' || !(m.mediaCursor > 1500)) return;
+    this.shotTried.add(it.path);
+    // 失敗したら少し間をあけて撮り直す。上限回数に達したらこの動画は諦める
+    const failed = () => {
+      const n = (this.shotFails.get(it.path) || 0) + 1;
+      this.shotFails.set(it.path, n);
+      if (n < SHOT_MAX_TRIES) setTimeout(() => this.shotTried.delete(it.path), SHOT_RETRY_MS);
+    };
+    this.sock.call('GetSourceScreenshot', {
+      sourceName: sel.sourceName, imageFormat: 'jpg', imageWidth: THUMB_W, imageCompressionQuality: 72,
+    }).then((r) => {
+      const now = this.app.state;
+      if (!r.imageData) failed();
+      else if (now && now.current === it.id) thumbs.setShot(it.path, r.imageData);
+      else this.shotTried.delete(it.path); // 撮影中に動画が切り替わった（失敗ではないので数えずに撮り直す）
+    }).catch(failed);
   }
   pollSoon(ms = 120) {
     clearTimeout(this.pollTimer);
@@ -964,7 +1233,7 @@ class DemoBackend {
   publish(full = true) {
     const st = {
       v: 1, ack: this.ack, mode: this.mode, loop: this.loop, current: this.current, ended: this.ended,
-      items: this.items.map(({ id, path, name }) => ({ id, path, name })), order: this.order(), shuffle: this.shuffle,
+      items: this.items.map(({ id, path, name, dur }) => ({ id, path, name, dur })), order: this.order(), shuffle: this.shuffle,
       parent: '動画プレイリスト（デモ）', msg: this.msg, msg_id: this.msgId,
     };
     if (full) this.app.setState(st, JSON.stringify(st), true);
@@ -1139,8 +1408,36 @@ const app = {
     this.renderNow(v);
     this.renderList(v);
 
+    this.renderFoot(v);
+  },
+
+  renderFoot(v) {
+    v = v || this.view();
     const n = v.order.length;
-    $('foot').innerHTML = '<span>' + n + '本</span><span class="grow"></span><span>ドラッグで並べ替え・ダブルクリックで再生</span>';
+    let total = 0, unknown = 0;
+    v.order.forEach((id) => {
+      const d = thumbs.durationOf(v.byId.get(id));
+      if (d > 0) total += d; else unknown++;
+    });
+    let t = '';
+    if (n && total > 0) t = '<span class="total">合計 ' + fmtTime(total) + (unknown ? '＋' : '') + '</span>';
+    $('foot').innerHTML = '<span>' + n + '本</span>' + t + '<span class="grow"></span><span>ドラッグで並べ替え・ダブルクリックで再生</span>';
+    $('foot').title = unknown && n ? unknown + '本は長さがまだ分かりません（ドックで読めない形式は、一度再生すると分かります）' : '';
+  },
+
+  // サムネイルや長さが分かったとき、該当する行だけ更新する
+  onMeta(path) {
+    if (this.dragging) return;
+    const sel = '.thumb[data-path="' + CSS.escape(path) + '"]';
+    $('list').querySelectorAll(sel).forEach((slot) => {
+      thumbs.paint(slot, path);
+      const row = slot.closest('.row');
+      const it = this.state && (this.state.items || []).find((i) => i.path === path);
+      const old = row && row.querySelector('.dur');
+      if (old && it) old.outerHTML = durHtml(it);
+    });
+    clearTimeout(this.footTimer);
+    this.footTimer = setTimeout(() => this.renderFoot(), 200);
   },
 
   renderNow(v) {
@@ -1217,8 +1514,10 @@ const app = {
         : '<span class="num">' + (idx + 1) + '</span>';
       return '<li class="' + cls + '" data-id="' + id + '" tabindex="0" title="' + esc(it.path) + '">'
         + '<span class="grip">' + icon('grip') + '</span>' + lead
+        + '<span class="thumb" data-path="' + esc(it.path) + '"><span class="ext-tag">' + esc(extTag(it)) + '</span></span>'
         + '<div class="meta"><div class="name">' + nameHtml(it.name) + '</div><div class="dir">' + esc(dirOf(it.path)) + '</div></div>'
         + (isNext ? '<span class="badge">次</span>' : '')
+        + durHtml(it)
         + '<span class="row-actions">'
         + (isCur ? '' : '<button class="mini" data-act="upnext" title="次に再生する">' + icon('upnext') + '</button>')
         + '<button class="mini" data-act="play" title="今すぐ再生">' + icon('playnow') + '</button>'
@@ -1239,6 +1538,7 @@ const app = {
       html += '<li class="section-label" data-label="1">' + (st.mode === 'random' ? '↻ 最後まで再生したら再シャッフルして続けます' : '↻ 最後まで再生したら先頭に戻ります') + '</li>';
     }
     list.innerHTML = html;
+    thumbs.fill(list);
     this.updateProgress();
     if (this.focusId != null) {
       const el = list.querySelector('.row[data-id="' + this.focusId + '"]');
@@ -1403,6 +1703,9 @@ function setupDrag() {
     const r = row.getBoundingClientRect();
     const ghost = row.cloneNode(true);
     ghost.classList.add('drag-ghost');
+    // canvas は複製で中身が消えるので描き写す
+    const src = row.querySelectorAll('canvas'), dst = ghost.querySelectorAll('canvas');
+    src.forEach((c, i) => { try { dst[i].getContext('2d').drawImage(c, 0, 0); } catch (err) { /* ignore */ } });
     ghost.style.left = r.left + 'px';
     ghost.style.top = r.top + 'px';
     ghost.style.width = r.width + 'px';

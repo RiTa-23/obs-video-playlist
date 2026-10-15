@@ -13,7 +13,7 @@
 
 obs = obslua
 
-local VERSION     = "1.0.1"
+local VERSION     = "1.1.0"
 local FILTER_ID   = "vp_video_playlist"
 local FILTER_NAME = "動画プレイリスト"
 
@@ -32,7 +32,7 @@ local MAX_SCAN_DEPTH = 10
 -- 共有状態
 -- ---------------------------------------------------------------------------
 local instances = {}     -- 生きているフィルタインスタンスの集合
-local now_ms = 0         -- script_tick で進める経過時間
+local now_ms = 0         -- タイマーで進める経過時間（ミリ秒）
 local hotkey_ids = {}
 local pending_create = nil
 
@@ -810,7 +810,7 @@ end
 local function state_table(inst)
 	local items = jarray({})
 	for i, it in ipairs(inst.items) do
-		items[i] = { id = it.id, path = it.path, name = it.name, url = it.url or nil }
+		items[i] = { id = it.id, path = it.path, name = it.name, url = it.url or nil, dur = it.dur }
 	end
 	local order = jarray({})
 	for i, id in ipairs(play_order(inst)) do order[i] = id end
@@ -861,6 +861,7 @@ local function restore_state(inst, str)
 		if id and type(it.path) == "string" and it.path ~= "" then
 			inst.items[#inst.items + 1] = {
 				id = id, path = it.path, name = it.name or basename(it.path), url = it.url and true or nil,
+				dur = tonumber(it.dur),
 			}
 			if id > max_id then max_id = id end
 		end
@@ -874,6 +875,13 @@ local function restore_state(inst, str)
 	local cur = tonumber(st.current)
 	if cur and inst.by_id[cur] then inst.current = cur end
 	inst.ended = st.ended == true
+end
+
+local function format_duration(ms)
+	local s = math.floor((ms or 0) / 1000)
+	local h, m, sec = math.floor(s / 3600), math.floor(s % 3600 / 60), s % 60
+	if h > 0 then return string.format("%d:%02d:%02d", h, m, sec) end
+	return string.format("%d:%02d", m, sec)
 end
 
 local function status_text(inst)
@@ -977,6 +985,14 @@ local function tick_instance(inst)
 				or obs.obs_source_media_get_time(p) > 0
 			if healthy then
 				if since > 1500 then inst.fail_count = 0 end
+				-- 実際に再生して分かった長さを覚えておく（ドックの表示用。ドックが読めない形式でも表示できる）
+				if it and not it.url and since > 500 then
+					local d = math.floor(obs.obs_source_media_get_duration(p))
+					if d > 0 and it.dur ~= d then
+						it.dur = d
+						inst.dirty = true
+					end
+				end
 			elseif since > 4000 then
 				-- 「再生中」なのに長さも進みも 0 のまま＝読み込みに失敗している
 				fail_advance(inst, "読み込めない")
@@ -1042,8 +1058,14 @@ local function do_create_playlist_source(scene_src)
 	obs.obs_source_release(src)
 end
 
-function script_tick(seconds)
-	now_ms = now_ms + seconds * 1000
+-- 毎フレームの処理（再生終了の検出・状態の書き出し）。
+-- script_tick は使わない。OBS 30.0 以前には、script_tick を定義したスクリプトの読み込み中に
+-- 描画スレッドが未初期化の Lua を呼んで OBS ごと落ちる不具合がある（30.1 で修正）。タイマーなら安全。
+local last_ns = nil
+local function on_timer()
+	local t = obs.os_gettime_ns()
+	if last_ns then now_ms = now_ms + (t - last_ns) / 1000000 end
+	last_ns = t
 
 	if pending_create then
 		local sc = pending_create
@@ -1187,7 +1209,8 @@ source_info.get_properties = function(inst)
 			local it = inst.by_id[id]
 			if it then
 				local mark = (id == inst.current) and "▶ " or ""
-				obs.obs_property_list_add_int(jump, string.format("%s%d. %s", mark, i, it.name), id)
+				local dur = it.dur and ("  (" .. format_duration(it.dur) .. ")") or ""
+				obs.obs_property_list_add_int(jump, string.format("%s%d. %s%s", mark, i, it.name, dur), id)
 			end
 		end
 		obs.obs_property_set_modified_callback(jump, function(props_, prop, settings)
@@ -1314,6 +1337,7 @@ local HOTKEYS = {
 }
 
 function script_load(settings)
+	obs.timer_add(on_timer, 10)
 	for _, hk in ipairs(HOTKEYS) do
 		local id = obs.obs_hotkey_register_frontend(hk.name, hk.desc, function(pressed)
 			if pressed then for_each_active(hk.fn) end
