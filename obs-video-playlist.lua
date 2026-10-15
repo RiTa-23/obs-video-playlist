@@ -32,7 +32,7 @@ local MAX_SCAN_DEPTH = 10
 -- 共有状態
 -- ---------------------------------------------------------------------------
 local instances = {}     -- 生きているフィルタインスタンスの集合
-local now_ms = 0         -- script_tick で進める経過時間
+local now_ms = 0         -- タイマーで進める経過時間（ミリ秒）
 local hotkey_ids = {}
 local pending_create = nil
 
@@ -1042,8 +1042,14 @@ local function do_create_playlist_source(scene_src)
 	obs.obs_source_release(src)
 end
 
-function script_tick(seconds)
-	now_ms = now_ms + seconds * 1000
+-- 毎フレームの処理（再生終了の検出・状態の書き出し）。
+-- script_tick は使わない。OBS 30.0 以前には、script_tick を定義したスクリプトの読み込み中に
+-- 描画スレッドが未初期化の Lua を呼んで OBS ごと落ちる不具合がある（30.1 で修正）。タイマーなら安全。
+local last_ns = nil
+local function on_timer()
+	local t = obs.os_gettime_ns()
+	if last_ns then now_ms = now_ms + (t - last_ns) / 1000000 end
+	last_ns = t
 
 	if pending_create then
 		local sc = pending_create
@@ -1314,6 +1320,7 @@ local HOTKEYS = {
 }
 
 function script_load(settings)
+	obs.timer_add(on_timer, 10)
 	for _, hk in ipairs(HOTKEYS) do
 		local id = obs.obs_hotkey_register_frontend(hk.name, hk.desc, function(pressed)
 			if pressed then for_each_active(hk.fn) end
