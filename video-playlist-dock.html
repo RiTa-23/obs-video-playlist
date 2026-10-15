@@ -580,6 +580,8 @@ async function sha256b64(str) {
  *      スクリーンショット（obs-websocket）を取って覚えておく
  * ===================================================================== */
 const THUMB_W = 160, THUMB_H = 90;
+const SHOT_MAX_TRIES = 3;      // OBS のスクリーンショットが失敗したときに試す回数
+const SHOT_RETRY_MS = 3000;    // 失敗後、次に試すまでの間隔
 const META_MAX = 300;
 
 function isUrlPath(path) { return /^[a-z][\w+.-]*:\/\//i.test(path) && !/^file:/i.test(path); }
@@ -888,7 +890,8 @@ class ObsBackend {
     this.discoverTimer = null;
     this.retryTimer = null;
     this.wantConnected = false;
-    this.shotTried = new Set();
+    this.shotTried = new Set();   // 撮影中・撮影済み・諦めた動画
+    this.shotFails = new Map();   // 動画ごとの撮影失敗回数
     this.curSeen = null;
     this.sock.addEventListener('obs', (e) => this.onEvent(e.detail));
     this.sock.addEventListener('close', () => this.onClose());
@@ -994,13 +997,20 @@ class ObsBackend {
     if (Date.now() - this.curSeen.at < 2000) return;
     if (m.mediaState !== 'OBS_MEDIA_STATE_PLAYING' || !(m.mediaCursor > 1500)) return;
     this.shotTried.add(it.path);
+    // 失敗したら少し間をあけて撮り直す。上限回数に達したらこの動画は諦める
+    const failed = () => {
+      const n = (this.shotFails.get(it.path) || 0) + 1;
+      this.shotFails.set(it.path, n);
+      if (n < SHOT_MAX_TRIES) setTimeout(() => this.shotTried.delete(it.path), SHOT_RETRY_MS);
+    };
     this.sock.call('GetSourceScreenshot', {
       sourceName: sel.sourceName, imageFormat: 'jpg', imageWidth: THUMB_W, imageCompressionQuality: 72,
     }).then((r) => {
       const now = this.app.state;
-      if (r.imageData && now && now.current === it.id) thumbs.setShot(it.path, r.imageData);
-      else this.shotTried.delete(it.path);
-    }).catch(() => { /* 次の機会に */ });
+      if (!r.imageData) failed();
+      else if (now && now.current === it.id) thumbs.setShot(it.path, r.imageData);
+      else this.shotTried.delete(it.path); // 撮影中に動画が切り替わった（失敗ではないので数えずに撮り直す）
+    }).catch(failed);
   }
   pollSoon(ms = 120) {
     clearTimeout(this.pollTimer);
