@@ -1268,6 +1268,106 @@ local function dock_url()
 	return "file://" .. url_encode_path(path)
 end
 
+-- ---------------------------------------------------------------------------
+-- ドックURLに WebSocket のポートとパスワードを含める
+--   obs-websocket の接続情報を取り出す公開 API はないため、obs-websocket が設定を保存している
+--   ファイルを読む。保存場所は公開された仕様ではなく、OBS のバージョンで一度変わっている
+--   （新しい OBS: plugin_config/obs-websocket/config.json、古い OBS: global.ini の [OBSWebSocket]）。
+--   読めない・形が違う・値がおかしいときは何もせず、今までどおり接続情報なしの URL にする。
+--   将来の OBS でここが読めなくなっても、ドックでパスワードを1回入力すれば使える。
+-- ---------------------------------------------------------------------------
+local script_settings = nil  -- このスクリプトの設定（script_defaults で受け取る）
+local ws_read_ok = nil       -- 前回の読み取りが成功したか（ログを変化したときだけ出すため）
+
+local function ws_info(port, auth, password)
+	port = tonumber(port)
+	if not port or port < 1 or port > 65535 or port % 1 ~= 0 then return nil end
+	if type(auth) ~= "boolean" then return nil end
+	if auth and (type(password) ~= "string" or password == "") then return nil end
+	return { port = math.floor(port), auth = auth, password = auth and password or nil }
+end
+
+-- 新しい obs-websocket: <設定フォルダ>/plugin_config/obs-websocket/config.json
+local function ws_from_config_json()
+	if type(obs.obs_get_module) ~= "function" or type(obs.obs_module_get_config_path) ~= "function" then return nil end
+	local mod = obs.obs_get_module("obs-websocket")
+	if mod == nil then return nil end
+	local path = obs.obs_module_get_config_path(mod, "config.json")
+	if type(path) ~= "string" or path == "" then return nil end
+	local d = obs.obs_data_create_from_json_file(path)
+	if d == nil then return nil end
+	local r = nil
+	if obs.obs_data_has_user_value(d, "server_port") and obs.obs_data_has_user_value(d, "auth_required") then
+		r = ws_info(obs.obs_data_get_int(d, "server_port"), obs.obs_data_get_bool(d, "auth_required"),
+			obs.obs_data_get_string(d, "server_password"))
+	end
+	obs.obs_data_release(d)
+	return r
+end
+
+-- 古い obs-websocket: OBS の global.ini の [OBSWebSocket]
+local function ws_from_global_ini()
+	local cfg = nil
+	-- 設定を返す関数は OBS 31 で名前が変わった。あるものだけを呼ぶ
+	for _, name in ipairs({ "obs_frontend_get_app_config", "obs_frontend_get_global_config" }) do
+		if type(obs[name]) == "function" then
+			cfg = obs[name]()
+			if cfg ~= nil then break end
+		end
+	end
+	if cfg == nil or type(obs.config_has_user_value) ~= "function" then return nil end
+	local sec = "OBSWebSocket"
+	for _, key in ipairs({ "ServerPort", "AuthRequired" }) do
+		if not obs.config_has_user_value(cfg, sec, key) then return nil end
+	end
+	return ws_info(obs.config_get_uint(cfg, sec, "ServerPort"), obs.config_get_bool(cfg, sec, "AuthRequired"),
+		obs.config_get_string(cfg, sec, "ServerPassword"))
+end
+
+-- 読めたら { port, auth, password }、読めなければ nil。エラーにはしない
+local function read_ws_config()
+	for _, fn in ipairs({ ws_from_config_json, ws_from_global_ini }) do
+		local ok, r = pcall(fn)
+		if ok and r then return r end
+	end
+	return nil
+end
+
+local function url_encode_component(s)
+	return (tostring(s):gsub("[^%w%-%._~]", function(c) return string.format("%%%02X", string.byte(c)) end))
+end
+
+local function dock_url_with_ws(ws)
+	local q = "?port=" .. ws.port
+	if ws.auth then q = q .. "&password=" .. url_encode_component(ws.password) end
+	return dock_url() .. q
+end
+
+-- スクリプト画面の「ドックURL」欄
+local function add_dock_url_prop(props)
+	local ws = read_ws_config()
+	if (ws ~= nil) ~= ws_read_ok then
+		ws_read_ok = ws ~= nil
+		if not ws then
+			log("WebSocket の設定を読み取れなかったため、ドックURLに接続情報を含めていません（ドックでパスワードを入力すれば使えます）")
+		end
+	end
+	if ws and script_settings then
+		-- 接続情報つきの URL は既定値として渡すだけにして、シーンコレクションには保存しない
+		-- （シーンコレクションを書き出して人に渡しても、パスワードが入らないように）
+		obs.obs_data_unset_user_value(script_settings, "vp_dock_url_ws")
+		obs.obs_data_set_default_string(script_settings, "vp_dock_url_ws", dock_url_with_ws(ws))
+		local t = obs.obs_properties_add_text(props, "vp_dock_url_ws", "ドックURL",
+			ws.auth and obs.OBS_TEXT_PASSWORD or obs.OBS_TEXT_DEFAULT)
+		obs.obs_property_set_long_description(t, ws.auth
+			and "「表示」を押してコピーし、「ドック → カスタムブラウザドック」の URL 欄に貼り付けてください。WebSocket のパスワードが入っているので、配信や画面共有に映さないでください。"
+			or "コピーして「ドック → カスタムブラウザドック」の URL 欄に貼り付けてください。")
+		return
+	end
+	local t = obs.obs_properties_add_text(props, "vp_dock_url", "ドックURL", obs.OBS_TEXT_DEFAULT)
+	obs.obs_property_set_long_description(t, "コピーして「ドック → カスタムブラウザドック」の URL 欄に貼り付けてください。")
+end
+
 function script_description()
 	return [[
 <h3>動画プレイリスト <small>v]] .. VERSION .. [[</small></h3>
@@ -1300,12 +1400,12 @@ function script_properties()
 		end
 		return false
 	end)
-	local t = obs.obs_properties_add_text(props, "vp_dock_url", "ドックURL", obs.OBS_TEXT_DEFAULT)
-	obs.obs_property_set_long_description(t, "コピーして「ドック → カスタムブラウザドック」の URL 欄に貼り付けてください。")
+	add_dock_url_prop(props)
 	return props
 end
 
 function script_defaults(settings)
+	script_settings = settings
 	obs.obs_data_set_default_string(settings, "vp_dock_url", dock_url())
 end
 
@@ -1352,6 +1452,7 @@ function script_load(settings)
 end
 
 function script_save(settings)
+	obs.obs_data_unset_user_value(settings, "vp_dock_url_ws")  -- パスワード入りの URL は保存しない
 	for _, hk in ipairs(HOTKEYS) do
 		local id = hotkey_ids[hk.name]
 		if id then
