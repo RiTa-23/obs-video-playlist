@@ -7,7 +7,7 @@
 GitHub で Release を **公開（Publish）** すると、GitHub Actions のワークフロー
 （[`.github/workflows/release.yml`](../.github/workflows/release.yml)）が動き、次のことを自動で行います。
 
-1. `obs-video-playlist.lua` の `VERSION` と Release のタグが一致しているか確認する
+1. `obs-video-playlist.lua` の `VERSION`、`video-playlist-dock.html` の `DOCK_VERSION` と Release のタグが一致しているか確認する
 2. 配布用 zip `obs-video-playlist-vX.Y.Z.zip` を作る
 3. その zip を Release の Assets に添付する
 
@@ -45,7 +45,13 @@ obs-video-playlist/
    local VERSION     = "1.0.2"
    ```
 
-2. （任意）`video-playlist-dock.html` 冒頭のコメントにあるバージョン表記も同じ番号にする
+2. `video-playlist-dock.html` の `DOCK_VERSION` を同じ番号にする（冒頭のコメントにあるバージョン表記も合わせる）
+
+   ```js
+   const DOCK_VERSION = '1.0.2';
+   ```
+
+   ドックはこの番号と GitHub の最新 Release を比べて「新しいバージョンがあります」と知らせます。
 3. `README.md` の「更新履歴」の一番上に変更内容を1行で追記する
 4. コミットして main に push する
 
@@ -55,7 +61,7 @@ obs-video-playlist/
    git push origin main
    ```
 
-> `VERSION` を上げ忘れたままタグを作ると、ワークフローが止まり zip が添付されません。
+> `VERSION` や `DOCK_VERSION` を上げ忘れたままタグを作ると、ワークフローが止まり zip が添付されません。
 
 ### 2. GitHub で Release を公開する
 
@@ -114,12 +120,12 @@ OBS で動画を順番／ランダムに連続再生し続けるプレイリス�
 
 **Actions** タブで「Release」ワークフローのログを確認します。
 
-- **「VERSION とタグが一致しません」と出ている**
+- **「VERSION とタグが一致しません」「DOCK_VERSION とタグが一致しません」と出ている**
   タグがすでに古い内容を指しているため、作り直します。
   1. Release のページ右上のゴミ箱アイコン（**Delete**）で Release を削除する
   2. **Releases** ページの **Tags** タブで、該当タグの右端の **…** → **Delete tag** で削除する
      （コマンドなら `git push --delete origin v1.0.2`）
-  3. `VERSION` を直して main に push し、[手順2](#2-github-で-release-を公開する)からやり直す
+  3. `VERSION`・`DOCK_VERSION` を直して main に push し、[手順2](#2-github-で-release-を公開する)からやり直す
 - **ワークフロー自体が動いていない**
   - **Save draft**（下書き）のままでは動きません。**Publish release** で公開してください
   - **Settings → Actions → General** で Actions が無効になっていないか確認してください

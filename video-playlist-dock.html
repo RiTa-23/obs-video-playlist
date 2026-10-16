@@ -96,6 +96,16 @@ svg { display: block; }
 .banner svg { width: 16px; height: 16px; flex: none; margin-top: 1px; }
 .banner a, .banner button.link { color: inherit; text-decoration: underline; background: none; border: 0; padding: 0; }
 
+/* ---------- 新しいバージョンのお知らせ ---------- */
+.notice {
+  margin: 8px 8px 0; padding: 7px 10px; border-radius: var(--radius);
+  font-size: 12px; display: flex; gap: 8px; align-items: flex-start;
+  background: var(--accent-tint); color: #c4d0ff; border: 1px solid var(--accent-tint-2);
+}
+.notice svg { width: 16px; height: 16px; flex: none; margin-top: 1px; }
+.notice a, .notice button.link { color: inherit; text-decoration: underline; background: none; border: 0; padding: 0; font-size: inherit; }
+.notice .sub { color: var(--muted); }
+
 main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 /* ---------- 再生中カード ---------- */
@@ -283,6 +293,8 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .field-row .field.port { flex: 0 0 90px; }
 .screen .actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
 .err-text { color: var(--danger); font-size: 12px; margin-top: 10px; }
+.check-row { display: flex; gap: 6px; align-items: center; margin-top: 12px; font-size: 12px; color: var(--muted); }
+.check-row input { margin: 0; }
 .steps { margin: 12px 0 0; padding-left: 20px; color: var(--muted); font-size: 12px; }
 .steps li { margin: 6px 0; }
 .steps b { color: var(--text); font-weight: 600; }
@@ -324,6 +336,7 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
   </header>
 
   <div class="banner" id="banner" hidden></div>
+  <div class="notice" id="updNotice" hidden></div>
 
   <main id="main" hidden>
     <section class="now" id="now">
@@ -407,6 +420,7 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
       <div class="field port"><label for="cfgPort">ポート</label><input id="cfgPort" inputmode="numeric" autocomplete="off"></div>
     </div>
     <div class="field"><label for="cfgPass">パスワード（認証を無効にしている場合は空欄）</label><input id="cfgPass" type="password" autocomplete="off"></div>
+    <label class="check-row"><input type="checkbox" id="cfgUpdCheck">新しいバージョンを確認する（1日1回 GitHub に問い合わせます）</label>
     <div class="err-text" id="connErr" hidden></div>
     <div class="actions">
       <button class="btn primary" id="btnConnect">接続</button>
@@ -780,6 +794,81 @@ const thumbs = {
 };
 
 /* =====================================================================
+ * 新しいバージョンのお知らせ
+ *   GitHub の最新 Release を 1日1回まで確認し、使っている版より新しければ知らせる。
+ *   確認はドックの接続設定でオフにできる。オフラインなどで確認できないときは何も出さない。
+ * ===================================================================== */
+const DOCK_VERSION = '1.1.0';
+const REPO_URL = 'https://github.com/RiTa-23/obs-video-playlist';
+const LATEST_API = 'https://api.github.com/repos/RiTa-23/obs-video-playlist/releases/latest';
+const UPDATE_GUIDE_URL = REPO_URL + '#%E6%9B%B4%E6%96%B0%E3%81%99%E3%82%8B%E3%81%A8%E3%81%8D'; // #更新するとき
+const HOUR_MS = 3600 * 1000;
+
+function parseVer(v) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(String(v || '').trim());
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+function cmpVer(a, b) {
+  const x = parseVer(a), y = parseVer(b);
+  if (!x || !y) return 0;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+  return 0;
+}
+
+const updates = {
+  latest: store.get('updLatest', null),   // { tag, url }
+  enabled() { return store.get('updCheck', true) !== false; },
+  setEnabled(on) {
+    store.set('updCheck', !!on);
+    if (on) { store.set('updTriedAt', 0); this.check(); } else this.render();
+  },
+  // 使っている版：ドックとスクリプトのうち古いほう（どちらかだけ古い場合も知らせる）
+  current() {
+    let cur = DOCK_VERSION;
+    const sv = app.state && app.state.version;
+    if (parseVer(sv) && cmpVer(sv, cur) < 0) cur = sv;
+    return cur.replace(/^v/, '');
+  },
+  async check() {
+    if (!this.enabled() || (app.backend && app.backend.isDemo)) { this.render(); return; }
+    const tried = store.get('updTriedAt', 0);
+    const wait = store.get('updFailed', false) ? 3 * HOUR_MS : 20 * HOUR_MS;
+    if (Date.now() - tried < wait) { this.render(); return; }
+    store.set('updTriedAt', Date.now());
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 8000);
+      const r = await fetch(LATEST_API, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: ctl.signal });
+      clearTimeout(timer);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      if (!parseVer(j.tag_name)) throw new Error('bad tag');
+      const url = typeof j.html_url === 'string' && j.html_url.startsWith(REPO_URL + '/') ? j.html_url : REPO_URL + '/releases/latest';
+      this.latest = { tag: j.tag_name, url };
+      store.set('updLatest', this.latest);
+      store.set('updFailed', false);
+    } catch (e) {
+      store.set('updFailed', true);  // 次は少し間をあけて試す。画面には何も出さない
+    }
+    this.render();
+  },
+  render() {
+    const el = $('updNotice');
+    const L = this.latest;
+    const show = this.enabled() && L && parseVer(L.tag) && cmpVer(L.tag, this.current()) > 0
+      && store.get('updDismissed', '') !== L.tag;
+    if (!show) { el.hidden = true; return; }
+    el.innerHTML = icon('info') + '<div>新しいバージョン <b>' + esc(L.tag) + '</b> があります'
+      + '<span class="sub">（今は v' + esc(this.current()) + '）</span><br>'
+      + '<a href="' + esc(L.url) + '" target="_blank" rel="noopener">ダウンロード</a>　'
+      + '<a href="' + UPDATE_GUIDE_URL + '" target="_blank" rel="noopener">更新方法</a>　'
+      + '<button class="link" id="updDismiss">このバージョンは通知しない</button></div>';
+    el.hidden = false;
+    $('updDismiss').onclick = () => { store.set('updDismissed', L.tag); this.render(); };
+  },
+};
+
+/* =====================================================================
  * obs-websocket v5 クライアント
  * ===================================================================== */
 const SUBS = (1 << 0) | (1 << 3) | (1 << 5) | (1 << 8); // General, Inputs, Filters, MediaInputs
@@ -868,6 +957,8 @@ class ObsSocket extends EventTarget {
  * 本番バックエンド（OBS）
  * ===================================================================== */
 const FILTER_KIND = 'vp_video_playlist';
+// 送ったコマンドにスクリプトがこの時間応答しなければ「スクリプトが動いていない」と判断する
+const SCRIPT_TIMEOUT_MS = 5000;
 
 function connConfig() {
   const q = new URLSearchParams(location.search);
@@ -893,8 +984,14 @@ class ObsBackend {
     this.shotTried = new Set();   // 撮影中・撮影済み・諦めた動画
     this.shotFails = new Map();   // 動画ごとの撮影失敗回数
     this.curSeen = null;
+    this.sentAt = new Map();      // コマンドID → 最初に送った時刻（スクリプトの応答確認用）
+    this.lastPing = 0;
     this.sock.addEventListener('obs', (e) => this.onEvent(e.detail));
     this.sock.addEventListener('close', () => this.onClose());
+    // ドックを表示し直したときにも、スクリプトが動いているか確かめる
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && Date.now() - this.lastPing > 30000) this.ping();
+    });
   }
   get isDemo() { return false; }
   config() { return connConfig(); }
@@ -954,8 +1051,22 @@ class ObsBackend {
   select(pl) {
     this.sel = pl;
     this.pending = [];
+    this.sentAt.clear();
+    this.app.setScriptDown(false);
     clearTimeout(this.pollTimer);
-    if (pl) this.poll();
+    if (pl) { this.poll(); this.ping(); }
+  }
+  // スクリプトに応答を求める（届けば ack が進む。何も変更しない）
+  ping() {
+    if (!this.sel || !this.sock.ready) return;
+    this.lastPing = Date.now();
+    this.send({ op: 'ping' });
+  }
+  // 送ったコマンドに一定時間応答がなければ、スクリプトが動いていないと知らせる
+  checkScript() {
+    let oldest = Infinity;
+    for (const c of this.pending) oldest = Math.min(oldest, this.sentAt.get(c.id) || Date.now());
+    this.app.setScriptDown(oldest !== Infinity && Date.now() - oldest > SCRIPT_TIMEOUT_MS);
   }
   async poll() {
     clearTimeout(this.pollTimer);
@@ -1021,10 +1132,13 @@ class ObsBackend {
     if (raw) { try { st = JSON.parse(raw); } catch (e) { st = null; } }
     if (st && this.pending.length) {
       this.pending = this.pending.filter((c) => c.id > (st.ack || 0));
-      if (this.pending.length) {
-        if (Date.now() - this.lastFlush > 1500) this.flush();
-        return; // 楽観的な表示を保つ
-      }
+      for (const id of this.sentAt.keys()) if (!this.pending.some((c) => c.id === id)) this.sentAt.delete(id);
+    }
+    this.checkScript();
+    if (this.pending.length) {
+      if (Date.now() - this.lastFlush > 1500) this.flush();
+      // 応答確認（ping）だけが残っているときは、表示を止めずに最新の状態を出す
+      if (st && this.pending.some((c) => c.op !== 'ping')) return; // 楽観的な表示を保つ
     }
     this.app.setState(st, raw, enabled);
   }
@@ -1037,6 +1151,7 @@ class ObsBackend {
     if (!this.sel) return;
     cmd.id = this.nextId();
     this.pending.push(cmd);
+    this.sentAt.set(cmd.id, Date.now());
     this.flush();
   }
   async flush() {
@@ -1342,12 +1457,19 @@ const app = {
   },
 
   /* ---------- 状態の受け取り ---------- */
+  setScriptDown(down) {
+    if (down === !!this.scriptDown) return;
+    this.scriptDown = down;
+    this.renderBanner();
+  },
   setState(st, raw, enabled) {
     const enabledChanged = enabled !== this.enabled;
     this.enabled = enabled;
     if (raw === this.stateRaw && !enabledChanged) return;
+    const versionChanged = (st && st.version) !== (this.state && this.state.version);
     this.stateRaw = raw;
     this.state = st;
+    if (versionChanged) updates.render();
     if (st && st.msg_id != null) {
       if (this.lastMsgId !== null && st.msg_id !== this.lastMsgId && st.msg) toast(st.msg);
       this.lastMsgId = st.msg_id;
@@ -1389,12 +1511,7 @@ const app = {
     const st = this.state;
     const v = this.view();
 
-    // バナー
-    if (!this.enabled) this.showBanner('warn', '「動画プレイリスト」フィルタが無効になっています（フィルタ画面の目のアイコンで有効化）。', 'state');
-    else if (st && st.warning) this.showBanner('warn', st.warning, 'state');
-    else if (st && st.error) this.showBanner('error', st.error, 'state');
-    else if (this.backend && this.backend.isDemo) this.showBanner('demo', 'デモモードです。OBS には接続していません。', 'demo', true);
-    else this.hideBannerIf('state');
+    this.renderBanner();
 
     // モード・ループ
     const random = st && st.mode === 'random';
@@ -1409,6 +1526,21 @@ const app = {
     this.renderList(v);
 
     this.renderFoot(v);
+  },
+
+  renderBanner() {
+    const st = this.state;
+    if (this.scriptDown) {
+      this.showBanner('error', 'スクリプトが応答していません。ツール → スクリプト で obs-video-playlist.lua が1つだけ読み込まれているか確認し、選んで「スクリプトを再読み込み」を押してください。', 'script', false,
+        { href: REPO_URL + '#%E3%81%86%E3%81%BE%E3%81%8F%E5%8B%95%E3%81%8B%E3%81%AA%E3%81%84%E3%81%A8%E3%81%8D', label: '詳しく' });
+      return;
+    }
+    this.hideBannerIf('script');
+    if (!this.enabled) this.showBanner('warn', '「動画プレイリスト」フィルタが無効になっています（フィルタ画面の目のアイコンで有効化）。', 'state');
+    else if (st && st.warning) this.showBanner('warn', st.warning, 'state');
+    else if (st && st.error) this.showBanner('error', st.error, 'state');
+    else if (this.backend && this.backend.isDemo) this.showBanner('demo', 'デモモードです。OBS には接続していません。', 'demo', true);
+    else this.hideBannerIf('state');
   },
 
   renderFoot(v) {
@@ -1561,10 +1693,12 @@ const app = {
     }
   },
 
-  showBanner(kind, text, tag, small) {
+  showBanner(kind, text, tag, small, link) {
     const b = $('banner');
     b.className = 'banner ' + (kind === 'error' ? 'error' : kind === 'demo' ? 'demo' : '');
-    b.innerHTML = icon(kind === 'demo' ? 'info' : 'alert') + '<div>' + esc(text) + (kind === 'demo' ? ' <button class="link" id="bannerConnect">OBS に接続する</button>' : '') + '</div>';
+    b.innerHTML = icon(kind === 'demo' ? 'info' : 'alert') + '<div>' + esc(text)
+      + (link ? ' <a href="' + esc(link.href) + '" target="_blank" rel="noopener">' + esc(link.label) + '</a>' : '')
+      + (kind === 'demo' ? ' <button class="link" id="bannerConnect">OBS に接続する</button>' : '') + '</div>';
     b.dataset.tag = tag || 'conn';
     b.hidden = false;
     const bc = $('bannerConnect');
@@ -1868,6 +2002,8 @@ function bind() {
     app.show('connect');
   };
   $('btnBack').onclick = () => app.show(app.playlists.length ? 'main' : 'none');
+  $('cfgUpdCheck').checked = updates.enabled();
+  $('cfgUpdCheck').onchange = (e) => updates.setEnabled(e.target.checked);
   $('btnConnect').onclick = () => {
     store.set('host', $('cfgHost').value.trim() || '127.0.0.1');
     store.set('port', $('cfgPort').value.trim() || '4455');
@@ -1954,6 +2090,7 @@ if (params.has('demo')) {
 }
 app.render();
 requestAnimationFrame(frame);
+updates.check();
 </script>
 </body>
 </html>

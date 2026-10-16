@@ -14,11 +14,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: スクリプトのバージョンとタグが一致しているか確認
+      - name: スクリプトとドックのバージョンがタグと一致しているか確認
         run: |
           script_version=$(sed -n 's/^local VERSION *= *"\(.*\)"/\1/p' obs-video-playlist.lua)
           if [ "v${script_version}" != "${GITHUB_REF_NAME}" ]; then
             echo "::error::obs-video-playlist.lua の VERSION (${script_version}) とタグ (${GITHUB_REF_NAME}) が一致しません"
+            exit 1
+          fi
+          dock_version=$(sed -n "s/^const DOCK_VERSION = '\(.*\)';.*/\1/p" video-playlist-dock.html)
+          if [ "v${dock_version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::video-playlist-dock.html の DOCK_VERSION (${dock_version}) とタグ (${GITHUB_REF_NAME}) が一致しません"
             exit 1
           fi
 
