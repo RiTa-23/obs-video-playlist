@@ -13,7 +13,7 @@
 
 obs = obslua
 
-local VERSION     = "1.1.0"
+local VERSION     = "1.2.0"
 local FILTER_ID   = "vp_video_playlist"
 local FILTER_NAME = "動画プレイリスト"
 

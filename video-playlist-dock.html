@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>動画プレイリスト</title>
 <!--
-  動画プレイリスト ドック (video-playlist-dock.html) v1.1.0
+  動画プレイリスト ドック (video-playlist-dock.html) v1.2.0
   OBS の「ドック → カスタムブラウザドック」に、このファイルの file:/// URL を登録して使います。
   obs-websocket（OBS 28 以降に内蔵）で OBS と通信します。
   URL パラメータ: ?port=4455&password=xxxx&host=127.0.0.1  /  ?demo （OBS なしで動作確認）
@@ -798,7 +798,7 @@ const thumbs = {
  *   GitHub の最新 Release を 1日1回まで確認し、使っている版より新しければ知らせる。
  *   確認はドックの接続設定でオフにできる。オフラインなどで確認できないときは何も出さない。
  * ===================================================================== */
-const DOCK_VERSION = '1.1.0';
+const DOCK_VERSION = '1.2.0';
 const REPO_URL = 'https://github.com/RiTa-23/obs-video-playlist';
 const LATEST_API = 'https://api.github.com/repos/RiTa-23/obs-video-playlist/releases/latest';
 const UPDATE_GUIDE_URL = REPO_URL + '#%E6%9B%B4%E6%96%B0%E3%81%99%E3%82%8B%E3%81%A8%E3%81%8D'; // #更新するとき
