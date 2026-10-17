@@ -427,7 +427,7 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
       <button class="btn" id="btnDemo">デモで試す</button>
       <button class="btn ghost" id="btnBack" hidden>戻る</button>
     </div>
-    <p class="hint">設定はこのドック内に保存されます。URL に <code>?password=…</code> を付けて登録することもできます。</p>
+    <p class="hint">設定はこのドック内に保存されます。スクリプト画面の「ドックURL」をそのまま登録すると、接続情報が最初から入ります。</p>
   </section>
 
   <section class="screen" id="screenNone" hidden>
@@ -960,13 +960,26 @@ const FILTER_KIND = 'vp_video_playlist';
 // 送ったコマンドにスクリプトがこの時間応答しなければ「スクリプトが動いていない」と判断する
 const SCRIPT_TIMEOUT_MS = 5000;
 
-function connConfig() {
+// 接続先の候補。ドックURLに付いた接続情報（スクリプトが付けたもの）→ 接続画面で入力して保存したもの、の順に試す。
+// URL のパスワードが古くなっていても（あとで変えた・起動オプションで上書きしている等）、入力し直せば使えるようにする。
+function urlConnKey() {
   const q = new URLSearchParams(location.search);
-  return {
-    host: q.get('host') || store.get('host', '127.0.0.1'),
-    port: q.get('port') || store.get('port', '4455'),
-    password: q.has('password') ? q.get('password') : store.get('password', ''),
+  return [q.get('host'), q.get('port'), q.get('password')].join('\u0000');
+}
+function connCandidates() {
+  const q = new URLSearchParams(location.search);
+  const saved = { host: store.get('host', '127.0.0.1'), port: String(store.get('port', '4455')), password: store.get('password', '') };
+  const fromUrl = {
+    host: q.get('host') || saved.host,
+    port: q.get('port') || saved.port,
+    password: q.has('password') ? q.get('password') : saved.password,
   };
+  // この URL で一度「URL の接続情報では入れない」と分かったら、保存した設定だけを使う
+  const list = store.get('manualFor', null) === urlConnKey() ? [saved] : [fromUrl, saved];
+  return list.filter((c, i) => list.findIndex((d) => d.host === c.host && d.port === c.port && d.password === c.password) === i);
+}
+function connConfig() {
+  return (app.backend && app.backend.active) || connCandidates()[0];
 }
 
 class ObsBackend {
@@ -998,17 +1011,31 @@ class ObsBackend {
   async connect() {
     clearTimeout(this.retryTimer);
     this.wantConnected = true;
-    const c = this.config();
+    this.active = null;
+    const list = connCandidates();
     this.app.setConn('wait', '接続中…');
-    try {
-      await this.sock.connect('ws://' + c.host + ':' + c.port, c.password);
-    } catch (e) {
+    let err = null, authErr = null;
+    for (let i = 0; i < list.length; i++) {
+      try {
+        await this.sock.connect('ws://' + list[i].host + ':' + list[i].port, list[i].password);
+        this.active = list[i];
+        // URL の接続情報で入れず、保存した設定で入れた → 次からはこの URL では保存した設定を使う
+        if (i > 0) store.set('manualFor', urlConnKey());
+        break;
+      } catch (e) {
+        err = e;
+        if (!authErr && (e.kind === 'auth_required' || e.kind === 'auth_failed')) authErr = e;
+      }
+    }
+    if (!this.active) {
+      const e = authErr || err || {};
       this.app.onConnectFailed(e.kind || 'closed');
-      if (e.kind !== 'auth_required' && e.kind !== 'auth_failed' && e.kind !== 'bad_url' && this.wantConnected) {
+      if (!authErr && e.kind !== 'bad_url' && this.wantConnected) {
         this.retryTimer = setTimeout(() => this.connect(), 3000);
       }
       return;
     }
+    const c = this.active;
     this.app.setConn('ok', '接続中: ' + c.host + ':' + c.port);
     this.app.onConnected();
     await this.discover();
@@ -1395,7 +1422,7 @@ const app = {
   onConnectFailed(kind) {
     const msgs = {
       auth_required: 'パスワードが必要です。OBS の「接続情報を表示」で確認して入力してください。',
-      auth_failed: 'パスワードが違います。',
+      auth_failed: 'パスワードが違います。OBS の「ツール → WebSocket サーバー設定 → 接続情報を表示」で確認して入力するか、スクリプト画面の「ドックURL」を登録し直してください。',
       timeout: 'OBS から応答がありません。',
       bad_url: 'ホストまたはポートが不正です。',
       closed: 'OBS に接続できません。OBS が起動していて、WebSocket サーバーが有効か確認してください。（自動で再試行します）',
@@ -2008,6 +2035,7 @@ function bind() {
     store.set('host', $('cfgHost').value.trim() || '127.0.0.1');
     store.set('port', $('cfgPort').value.trim() || '4455');
     store.set('password', $('cfgPass').value);
+    store.set('manualFor', urlConnKey());  // 入力した設定を、この URL の接続情報より優先する
     if (app.backend) app.backend.disconnect();
     if (app.backend && app.backend.isDemo) { location.search = ''; return; }
     app.backend = new ObsBackend(app);
