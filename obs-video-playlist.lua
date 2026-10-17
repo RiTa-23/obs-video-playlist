@@ -1325,21 +1325,34 @@ local function setup_status_text()
 		lines[#lines + 1] = "❌ プレイリスト：まだありません"
 		lines[#lines + 1] = "　　→ 下の「現在のシーンに『動画プレイリスト』を作成」を押してください"
 	end
+	-- プレイリストがドックのコマンドを処理したことがあれば（ack > 0）、それも接続済みとみなす。
+	-- ack はフィルタ側に保存されるので、スクリプトを外して付け直し、dock_seen が消えても残る
+	local acked = false
+	for inst in pairs(instances) do
+		if inst.source and (inst.ack or 0) > 0 then acked = true break end
+	end
 	if dock_seen > 0 then
 		lines[#lines + 1] = "✅ ドック：接続を確認済み（最後の接続 " .. os.date("%m/%d %H:%M", dock_seen) .. "）"
+	elseif acked then
+		lines[#lines + 1] = "✅ ドック：接続を確認済み"
 	else
 		lines[#lines + 1] = "❌ ドック：まだ接続を確認できていません"
 		lines[#lines + 1] = "　　1. ツール → WebSocket サーバー設定 で「WebSocket サーバーを有効にする」にチェック"
 		lines[#lines + 1] = "　　2. 下の「ドックURL」を「ドック → カスタムブラウザドック」に登録"
 		lines[#lines + 1] = "　　3. 開いたドックが OBS に接続できれば完了（パスワードを聞かれたら、WebSocket サーバー設定の「接続情報を表示」で確認）"
+		lines[#lines + 1] = "　　ドックを開いているのに ❌ のままなら、ドックで何か操作してから「再チェック」を押してください"
 	end
 	return table.concat(lines, "\n")
 end
 
 local function add_setup_props(props)
 	obs.obs_properties_add_text(props, "vp_setup_status", setup_status_text(), obs.OBS_TEXT_INFO)
-	obs.obs_properties_add_button(props, "vp_setup_recheck", "再チェック", function()
-		return true  -- プロパティを作り直して表示を更新する
+	obs.obs_properties_add_button(props, "vp_setup_recheck", "再チェック", function(props_, _)
+		-- スクリプト画面は、ボタンが true を返しても script_properties を呼び直さず、
+		-- 今ある項目のまま表示を作り直すだけ。そのため、ここで表示する文を書き換えてから true を返す
+		local p = props_ and obs.obs_properties_get(props_, "vp_setup_status")
+		if p then obs.obs_property_set_description(p, setup_status_text()) end
+		return true
 	end)
 	local folder = obs.obs_properties_add_path(props, "vp_create_folder", "最初に入れる動画フォルダ（任意）",
 		obs.OBS_PATH_DIRECTORY, nil, nil)
