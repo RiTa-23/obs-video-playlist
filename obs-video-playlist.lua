@@ -35,6 +35,9 @@ local instances = {}     -- 生きているフィルタインスタンスの集�
 local now_ms = 0         -- タイマーで進める経過時間（ミリ秒）
 local hotkey_ids = {}
 local pending_create = nil
+local create_folder = ""        -- 「作成」時に最初に入れる動画フォルダ（スクリプト画面で選択）
+local create_recursive = false  -- そのフォルダのサブフォルダも読み込むか
+local dock_seen = 0             -- ドックからコマンドが最後に届いた時刻（os.time）。0 = まだ一度も届いていない
 
 math.randomseed(os.time())
 math.random(); math.random(); math.random()
@@ -623,6 +626,8 @@ local function add_paths(inst, paths, recursive, position, play_now)
 		end
 	end
 	set_message(inst, table.concat(parts, "・"))
+	-- 1本も入らなかった理由は、リストが空のあいだフィルタ画面に表示する
+	if added == 0 and dup == 0 then inst.add_problem = inst.msg else inst.add_problem = nil end
 	log(string.format("[%s] %s", inst.parent_name or "?", inst.msg))
 	return added
 end
@@ -774,6 +779,7 @@ local function process_cmds(inst, str)
 		local cid = tonumber(c.id) or 0
 		if cid > inst.ack then
 			inst.ack = cid
+			dock_seen = os.time()  -- セットアップ状況の「ドック：接続を確認済み」に使う
 			local ok2, err = pcall(exec_command, inst, c)
 			if not ok2 then bug("コマンド実行エラー: " .. tostring(err)) end
 			inst.dirty = true
@@ -889,6 +895,7 @@ local function status_text(inst)
 	local lines = {}
 	if inst.warning then lines[#lines + 1] = "⚠ " .. inst.warning end
 	if #inst.items == 0 then
+		if inst.add_problem then lines[#lines + 1] = "⚠ " .. inst.add_problem end
 		lines[#lines + 1] = "まだ動画がありません。下の「ファイル／フォルダを追加」の ＋ から追加してください。"
 	else
 		local ord = play_order(inst)
@@ -1031,7 +1038,21 @@ local function do_create_playlist_source(scene_src)
 	-- 先にシーンへ追加してからフィルタを付ける（シーンのロック中に本スクリプトを呼ばせないため）
 	local item = obs.obs_scene_add(scene, src)
 
-	local f = obs.obs_source_create(FILTER_ID, FILTER_NAME, nil, nil)
+	-- スクリプト画面でフォルダが選ばれていれば、最初からその動画を登録しておく
+	-- （フィルタは作成時に vp_inbox を取り込み、メディアソースに付いた時点で再生を始める）
+	local fs = obs.obs_data_create()
+	if create_folder ~= "" then
+		local arr = obs.obs_data_array_create()
+		local entry = obs.obs_data_create()
+		obs.obs_data_set_string(entry, "value", create_folder)
+		obs.obs_data_array_push_back(arr, entry)
+		obs.obs_data_release(entry)
+		obs.obs_data_set_array(fs, "vp_inbox", arr)
+		obs.obs_data_array_release(arr)
+		obs.obs_data_set_bool(fs, "vp_recursive", create_recursive)
+	end
+	local f = obs.obs_source_create(FILTER_ID, FILTER_NAME, fs, nil)
+	obs.obs_data_release(fs)
 	if f ~= nil then
 		obs.obs_source_filter_add(src, f)
 		obs.obs_source_release(f)
@@ -1054,7 +1075,11 @@ local function do_create_playlist_source(scene_src)
 	if obs.obs_frontend_open_source_filters then
 		pcall(obs.obs_frontend_open_source_filters, src)
 	end
-	log("「" .. name .. "」を作成しました")
+	if create_folder ~= "" then
+		log("「" .. name .. "」を作成しました（フォルダ: " .. create_folder .. "）")
+	else
+		log("「" .. name .. "」を作成しました")
+	end
 	obs.obs_source_release(src)
 end
 
@@ -1273,9 +1298,9 @@ function script_description()
 <h3>動画プレイリスト <small>v]] .. VERSION .. [[</small></h3>
 <p>動画を順番またはランダムで連続再生し続けます。</p>
 <ol>
-<li>下のボタンで「動画プレイリスト」を現在のシーンに作成<br>
+<li>（任意）「最初に入れる動画フォルダ」を選び、下のボタンで「動画プレイリスト」を現在のシーンに作成<br>
 （既存のメディアソースに使う場合は、そのソースのフィルタに「動画プレイリスト」を追加）</li>
-<li>フィルタ画面の「ファイル／フォルダを追加」の ＋ から動画を登録</li>
+<li>動画はフィルタ画面の「ファイル／フォルダを追加」の ＋ やドックからも追加できます</li>
 <li>メニュー「ドック → カスタムブラウザドック」で、下の「ドックURL」を登録すると、
 ドラッグで並べ替えできる操作パネルが使えます</li>
 </ol>
@@ -1283,8 +1308,62 @@ function script_description()
 ]]
 end
 
+-- セットアップ状況。OBS の設定ファイルは読まず、このスクリプト自身が見たことだけで判定する
+-- （OBS を更新しても判定のしかたが変わらないように）
+local function setup_status_text()
+	local count, videos = 0, 0
+	for inst in pairs(instances) do
+		if inst.source then
+			count = count + 1
+			videos = videos + #inst.items
+		end
+	end
+	local lines = { "セットアップ状況" }
+	if count > 0 then
+		lines[#lines + 1] = string.format("✅ プレイリスト：%d個（動画 %d本）", count, videos)
+	else
+		lines[#lines + 1] = "❌ プレイリスト：まだありません"
+		lines[#lines + 1] = "　　→ 下の「現在のシーンに『動画プレイリスト』を作成」を押してください"
+	end
+	-- プレイリストがドックのコマンドを処理したことがあれば（ack > 0）、それも接続済みとみなす。
+	-- ack はフィルタ側に保存されるので、スクリプトを外して付け直し、dock_seen が消えても残る
+	local acked = false
+	for inst in pairs(instances) do
+		if inst.source and (inst.ack or 0) > 0 then acked = true break end
+	end
+	if dock_seen > 0 then
+		lines[#lines + 1] = "✅ ドック：接続を確認済み（最後の接続 " .. os.date("%m/%d %H:%M", dock_seen) .. "）"
+	elseif acked then
+		lines[#lines + 1] = "✅ ドック：接続を確認済み"
+	else
+		lines[#lines + 1] = "❌ ドック：まだ接続を確認できていません"
+		lines[#lines + 1] = "　　1. ツール → WebSocket サーバー設定 で「WebSocket サーバーを有効にする」にチェック"
+		lines[#lines + 1] = "　　2. 下の「ドックURL」を「ドック → カスタムブラウザドック」に登録"
+		lines[#lines + 1] = "　　3. 開いたドックが OBS に接続できれば完了（パスワードを聞かれたら、WebSocket サーバー設定の「接続情報を表示」で確認）"
+		lines[#lines + 1] = "　　ドックを開いているのに ❌ のままなら、ドックで何か操作してから「再チェック」を押してください"
+	end
+	return table.concat(lines, "\n")
+end
+
+local function add_setup_props(props)
+	obs.obs_properties_add_text(props, "vp_setup_status", setup_status_text(), obs.OBS_TEXT_INFO)
+	obs.obs_properties_add_button(props, "vp_setup_recheck", "再チェック", function(props_, _)
+		-- スクリプト画面は、ボタンが true を返しても script_properties を呼び直さず、
+		-- 今ある項目のまま表示を作り直すだけ。そのため、ここで表示する文を書き換えてから true を返す
+		local p = props_ and obs.obs_properties_get(props_, "vp_setup_status")
+		if p then obs.obs_property_set_description(p, setup_status_text()) end
+		return true
+	end)
+	local folder = obs.obs_properties_add_path(props, "vp_create_folder", "最初に入れる動画フォルダ（任意）",
+		obs.OBS_PATH_DIRECTORY, nil, nil)
+	obs.obs_property_set_long_description(folder,
+		"選んでから下のボタンで作成すると、このフォルダの動画を登録した状態で再生が始まります。空欄なら動画なしで作成します。")
+	obs.obs_properties_add_bool(props, "vp_create_recursive", "サブフォルダの中も読み込む")
+end
+
 function script_properties()
 	local props = obs.obs_properties_create()
+	add_setup_props(props)
 	obs.obs_properties_add_button(props, "vp_create", "現在のシーンに「動画プレイリスト」を作成", function()
 		local ok, sc = pcall(function()
 			if obs.obs_frontend_preview_program_mode_active and obs.obs_frontend_preview_program_mode_active() then
@@ -1310,6 +1389,8 @@ function script_defaults(settings)
 end
 
 function script_update(settings)
+	create_folder = obs.obs_data_get_string(settings, "vp_create_folder") or ""
+	create_recursive = obs.obs_data_get_bool(settings, "vp_create_recursive")
 	-- ドックURLは常にこのスクリプトの場所を指すように戻す
 	local url = dock_url()
 	if obs.obs_data_get_string(settings, "vp_dock_url") ~= url then
@@ -1347,6 +1428,7 @@ function script_load(settings)
 		obs.obs_hotkey_load(id, a)
 		obs.obs_data_array_release(a)
 	end
+	dock_seen = obs.obs_data_get_int(settings, "vp_dock_seen")
 	script_update(settings)
 	log("動画プレイリスト v" .. VERSION .. " を読み込みました")
 end
@@ -1360,6 +1442,7 @@ function script_save(settings)
 			obs.obs_data_array_release(a)
 		end
 	end
+	obs.obs_data_set_int(settings, "vp_dock_seen", dock_seen)
 end
 
 function script_unload()
