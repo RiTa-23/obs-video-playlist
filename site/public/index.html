@@ -238,7 +238,7 @@
         <h1>OBS で、動画を<br><span class="em">流しっぱなし</span>に。</h1>
         <p class="lead">登録した動画を、順番またはランダムで連続再生し続けます。専用のドックで、再生中の動画とこれから流れる動画がひと目でわかり、ドラッグで再生順を入れ替えられます。</p>
         <div class="cta">
-          <a class="btn-dl" href="https://github.com/RiTa-23/obs-video-playlist/releases/latest" data-download>
+          <a class="btn-dl" href="/download" data-download>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
             <span>無料でダウンロード</span>
           </a>
@@ -418,7 +418,7 @@
       <h2>さっそく使ってみる</h2>
       <p>無料・オープンソース（MIT License）。</p>
       <div class="cta">
-        <a class="btn-dl" href="https://github.com/RiTa-23/obs-video-playlist/releases/latest" data-download>
+        <a class="btn-dl" href="/download" data-download>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
           <span>無料でダウンロード</span>
         </a>
@@ -439,11 +439,13 @@
 </footer>
 
 <script>
-// 「ダウンロード」ボタンを最新 Release の配布用 zip に直接つなぐ。
-// GitHub API で最新版を調べ、obs-video-playlist-vX.Y.Z.zip の直リンクに差し替える
-// （取得できないときは Release ページへのリンクのまま）。
+// ダウンロードボタンは /download（Cloudflare Pages Functions）が最新版の zip に転送する。
+// ここでは /api/latest から版名・公開日・サイズを取って表示するだけ。
+// /api/latest が使えないとき（Functions のない環境でページだけ開いた場合など）は
+// GitHub API で直接調べ、ボタンを zip の直リンク（だめなら Release ページ）に差し替える。
 (function () {
   var REPO = 'RiTa-23/obs-video-playlist';
+  var RELEASES_URL = 'https://github.com/' + REPO + '/releases/latest';
   var ASSET = /^obs-video-playlist-v[\d.]+\.zip$/;
 
   function fmtSize(bytes) {
@@ -453,23 +455,33 @@
     var d = new Date(iso);
     return d.getFullYear() + '/' + (d.getMonth() + 1) + '/' + d.getDate();
   }
+  function getJson(url) {
+    return fetch(url, { headers: { Accept: 'application/json' } }).then(function (r) {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    });
+  }
+  function showVersion(rel) {
+    var parts = [rel.tag];
+    if (rel.publishedAt) parts[0] += '（' + fmtDate(rel.publishedAt) + '）';
+    if (rel.size) parts.push('zip ' + fmtSize(rel.size));
+    document.querySelectorAll('[data-dl-version]').forEach(function (el) { el.textContent = parts.join(' · '); });
+  }
+  function setButtons(url) {
+    document.querySelectorAll('a.btn-dl[data-download]').forEach(function (a) { a.href = url; });
+  }
 
-  fetch('https://api.github.com/repos/' + REPO + '/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
-    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-    .then(function (rel) {
-      var asset = (rel.assets || []).filter(function (a) { return ASSET.test(a.name); })[0];
-      if (!asset) return;
-      document.querySelectorAll('a.btn-dl[data-download]').forEach(function (a) {
-        a.href = asset.browser_download_url;
-        a.setAttribute('download', asset.name);
-        a.title = asset.name;
-      });
-      // ヘッダーの小さいボタンはページ上部のダウンロード欄へ移動するだけにしておく
-      document.querySelectorAll('[data-dl-version]').forEach(function (el) {
-        el.textContent = rel.tag_name + '（' + fmtDate(rel.published_at) + '）· zip ' + fmtSize(asset.size);
+  getJson('/api/latest')
+    .then(showVersion)
+    .catch(function () {
+      return getJson('https://api.github.com/repos/' + REPO + '/releases/latest').then(function (rel) {
+        var asset = (rel.assets || []).filter(function (a) { return ASSET.test(a.name); })[0];
+        if (!asset) throw new Error('no asset');
+        setButtons(asset.browser_download_url);
+        showVersion({ tag: rel.tag_name, publishedAt: rel.published_at, size: asset.size });
       });
     })
-    .catch(function () { /* Release ページへのリンクのまま */ });
+    .catch(function () { setButtons(RELEASES_URL); });
 })();
 </script>
 </body>
